@@ -4,8 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scratchboard</title>
-<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<script src="/vendor/marked.js"></script>
+<script src="/vendor/purify.js"></script>
+<link rel="stylesheet" href="/vendor/xterm.css">
+<script src="/vendor/xterm.js"></script>
+<script src="/vendor/addon-fit.js"></script>
 <style>
 :root {
   --bg: #f6f5f2; --surface: #ffffff; --surface-2: #efede8; --line: #dedad2;
@@ -70,6 +73,14 @@ button:disabled { opacity: .5; cursor: default; }
 .mini.selected { background: var(--surface); color: var(--text); }
 aside { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--surface); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.08); transform: translateX(100%); transition: transform .18s ease; z-index: 10; display: flex; flex-direction: column; }
 aside.open { transform: none; }
+aside.wide { width: min(980px, 100vw); }
+aside .tabs { display: flex; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid var(--line); }
+aside .tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 6px 10px; color: var(--muted); }
+aside .tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+aside .tabs button:disabled { opacity: .4; }
+aside .term { flex: 1; min-height: 0; padding: 8px; background: #111; display: none; }
+aside .term.on { display: block; }
+aside .term .note { color: #aaa; font: 13px var(--sans); padding: 12px; }
 aside .bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
 aside .bar .path { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 aside .rel { padding: 10px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 6px; font-size: 12px; }
@@ -100,8 +111,10 @@ aside .doc { padding: 4px 20px 40px; overflow: auto; flex: 1; }
 <main id="board"><div class="empty">Loading…</div></main>
 <aside id="panel">
   <div class="bar"><span class="path" id="pPath"></span><span id="pActions"></span><button id="pClose" title="Close">✕</button></div>
+  <div class="tabs" id="pTabs"><button data-tab="ticket" class="on">Ticket</button><button data-tab="session">Session</button></div>
   <div class="rel" id="pRel"></div>
   <div class="doc" id="pDoc"></div>
+  <div class="term" id="pTerm"></div>
 </aside>
 <div id="toast"></div>
 <script>
@@ -123,6 +136,12 @@ function connect() {
   const es = new EventSource('/api/events');
   es.onopen = () => setLive(true);
   es.onmessage = (e) => { board = JSON.parse(e.data); render(); if (selected) refreshPanel(false); };
+  // Sent instead of OS notifications where the OS has none we can use (Windows).
+  es.addEventListener('notify', (e) => {
+    const { title, body } = JSON.parse(e.data);
+    if (window.Notification?.permission === 'granted') new Notification(title, { body });
+    else toast(`${title}: ${body}`);
+  });
   es.onerror = () => setLive(false);
 }
 function setLive(on) { $('live').classList.toggle('on', on); $('live').querySelector('span').textContent = on ? 'live' : 'reconnecting'; }
@@ -234,14 +253,21 @@ async function doAction(act, key) {
     const res = await fetch(`/api/${act}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-scratchboard': '1' }, body: JSON.stringify({ key }) });
     const body = await res.json();
     if (!res.ok) throw new Error(body.error);
-    toast({ grill: `Grilling ${t.id}: /grill-me starting in tmux ${board.tmuxSession}. Press Open to join`, launch: `Building ${t.id}: /implement starting in tmux ${board.tmuxSession}`, release: `Released ${t.id}`, relaunch: `Relaunched ${t.id}`, open: `Opening ${t.id} in a terminal` }[act]);
+    if (!board.nativeNotifications && window.Notification?.permission === 'default') Notification.requestPermission();
+    const where = board.backend.label;
+    toast({ grill: `Grilling ${t.id}: /grill-me starting in ${where}. Press Open to join`, launch: `Building ${t.id}: /implement starting in ${where}`, release: `Released ${t.id}`, relaunch: `Relaunched ${t.id}`, open: body.inBrowser ? '' : `Opening ${t.id} in a terminal` }[act] || '');
+    if (act === 'open' && body.inBrowser) { await openPanel(key); showTab('session'); }
+    if (act === 'relaunch' && selected === key && tab === 'session') connectTerm(key);
   } catch (err) { toast(`Couldn't ${act} ${t?.id ?? ''}: ${err.message}`); }
 }
 
 let toastTimer;
-function toast(msg) { const el = $('toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 3500); }
+function toast(msg) { if (!msg) return; const el = $('toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 3500); }
 
-async function openPanel(key) { selected = key; render(); $('panel').classList.add('open'); await refreshPanel(true); }
+async function openPanel(key) {
+  if (key !== selected) { disconnectTerm(); showTab('ticket'); }
+  selected = key; render(); $('panel').classList.add('open'); await refreshPanel(true);
+}
 let lastMd = null;
 async function refreshPanel(force) {
   const t = byKey(selected);
@@ -253,6 +279,11 @@ async function refreshPanel(force) {
     <div><b>Blocks</b>${t.blocks.length ? t.blocks.map(link).join('') : 'nothing'}</div>
     ${t.session && t.session !== 'person' ? `<div><b>Session</b>${t.session}${t.sessionId ? ` · <code>${esc(t.sessionId)}</code>` : ''}</div>` : ''}`;
   for (const a of $('pRel').querySelectorAll('[data-goto]')) a.onclick = () => openPanel(a.dataset.goto);
+  // The Session tab shows the live terminal when Scratchboard runs Sessions itself (pty backend).
+  const hasTerm = board.backend.inBrowser && (t.session === 'running' || t.session === 'ended');
+  $('pTabs').style.display = board.backend.inBrowser ? '' : 'none';
+  $('pTabs').querySelector('[data-tab="session"]').disabled = !hasTerm;
+  if (tab === 'session' && termKey !== selected && hasTerm) connectTerm(selected);
   $('pActions').innerHTML = actionsFor(t).replace('class="actions"', 'class="actions" style="margin:0"');
   for (const b of $('pActions').querySelectorAll('button[data-act]')) b.onclick = () => doAction(b.dataset.act, b.dataset.for);
   try {
@@ -264,9 +295,53 @@ async function refreshPanel(force) {
     $('pDoc').innerHTML = window.marked && window.DOMPurify ? DOMPurify.sanitize(marked.parse(markdown)) : `<pre>${esc(markdown)}</pre>`;
   } catch { $('pDoc').textContent = 'Could not load the Ticket.'; }
 }
-function closePanel() { selected = null; lastMd = null; $('panel').classList.remove('open'); render(); }
+function closePanel() { disconnectTerm(); showTab('ticket'); selected = null; lastMd = null; $('panel').classList.remove('open'); render(); }
 $('pClose').onclick = closePanel;
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePanel(); });
+// Escape belongs to the Session when you're typing in its terminal.
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.target.closest('#pTerm')) closePanel(); });
+
+// --- Session terminal (pty backend) ---
+let tab = 'ticket';
+let term = null, fit = null, sock = null, termKey = null;
+for (const b of $('pTabs').querySelectorAll('button')) b.onclick = () => showTab(b.dataset.tab);
+function showTab(name) {
+  tab = name;
+  for (const b of $('pTabs').querySelectorAll('button')) b.classList.toggle('on', b.dataset.tab === name);
+  const session = name === 'session';
+  $('panel').classList.toggle('wide', session);
+  $('pRel').style.display = $('pDoc').style.display = session ? 'none' : '';
+  $('pTerm').classList.toggle('on', session);
+  if (session && selected && termKey !== selected) connectTerm(selected);
+  if (session) setTimeout(() => { fitTerm(); term?.focus(); }, 200);
+}
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function connectTerm(key) {
+  disconnectTerm();
+  termKey = key;
+  $('pTerm').innerHTML = '';
+  term = new Terminal({ fontFamily: cssVar('--mono'), fontSize: 13, cursorBlink: true, scrollback: 5000, theme: { background: '#111111' } });
+  fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open($('pTerm'));
+  sock = new WebSocket(`ws://${location.host}/api/term?key=${encodeURIComponent(key)}`);
+  const s = sock;
+  s.onopen = () => fitTerm();
+  s.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'data') term.write(m.data);
+    else if (m.type === 'reset') term.reset();
+    else if (m.type === 'exit') term.write('\r\n\x1b[2m[Session ended. Relaunch resumes the conversation.]\x1b[0m\r\n');
+    else if (m.type === 'gone') term.write('\r\n\x1b[2m[No running Session for this Ticket. Relaunch resumes the conversation.]\x1b[0m\r\n');
+  };
+  term.onData((data) => { if (s.readyState === 1) s.send(JSON.stringify({ type: 'input', data })); });
+}
+function fitTerm() {
+  if (!term || !fit || tab !== 'session') return;
+  try { fit.fit(); } catch { return; }
+  if (sock?.readyState === 1) sock.send(JSON.stringify({ type: 'resize', cols: term.cols, rows: term.rows }));
+}
+function disconnectTerm() { sock?.close(); term?.dispose(); sock = term = fit = termKey = null; }
+new ResizeObserver(() => fitTerm()).observe($('pTerm'));
 
 connect();
 </script>

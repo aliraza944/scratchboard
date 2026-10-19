@@ -1,16 +1,26 @@
-// HTTP server: serves the board page, pushes Board snapshots over SSE, and turns
-// drags into Launch / Release / Relaunch.
+// HTTP server: serves the board page, pushes Board snapshots over SSE, turns drags
+// into Launch / Release / Relaunch, and (pty backend) streams Sessions over WebSockets.
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readBoard } from './tickets.js';
 import { claimFile, releaseFile } from './claims.js';
-import { listSessions, launchSession, relaunchSession, killSession, openTerminal, notify, ticketKey, tmuxSessionName } from './sessions.js';
+import { createSessions, ticketKey } from './sessions.js';
+import { notify as nativeNotify, nativeNotifications } from './platform.js';
+import { WebSocketServer } from 'ws';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const PAGE = path.join(here, '..', 'public', 'index.html');
-// Build Tickets (to-tickets) go through /implement; decision Tickets use their Type's skill.
+// Browser libraries served from node_modules, so the board works offline.
+const NODE_MODULES = path.join(here, '..', 'node_modules');
+const VENDOR = {
+  'xterm.js': ['@xterm/xterm/lib/xterm.js', 'text/javascript'],
+  'xterm.css': ['@xterm/xterm/css/xterm.css', 'text/css'],
+  'addon-fit.js': ['@xterm/addon-fit/lib/addon-fit.js', 'text/javascript'],
+  'marked.js': ['marked/lib/marked.umd.js', 'text/javascript'],
+  'purify.js': ['dompurify/dist/purify.min.js', 'text/javascript'],
+};
 // Ready -> Grilling runs /grill-me; anything -> In progress runs /implement.
 const DEFAULT_PROMPTS = { grill: path.join(here, '..', 'prompt-grill.md'), implement: path.join(here, '..', 'prompt-implement.md') };
 const REPO_PROMPTS = { grill: 'scratchboard-prompt-grill.md', implement: 'scratchboard-prompt-implement.md' };
@@ -19,7 +29,8 @@ const today = () => new Date().toISOString().slice(0, 10);
 const SCAN_MS = 1500;
 const SESSION_RE = /session ([0-9a-f-]{36})/i;
 
-export function startServer({ repoRoot, port, onListening }) {
+export async function startServer({ repoRoot, port, backend: requestedBackend = 'auto', onListening }) {
+  const sessions = await createSessions(repoRoot, requestedBackend);
   const clients = new Set();
   let snapshot = null;
   let snapshotJson = '';
@@ -28,12 +39,12 @@ export function startServer({ repoRoot, port, onListening }) {
 
   async function scan() {
     const features = readBoard(repoRoot);
-    const sessions = await listSessions(repoRoot);
+    const live = await sessions.list();
     for (const f of features) {
       for (const t of f.tickets) {
         t.key = ticketKey(f.slug, t);
         const sessionId = t.assignee.match(SESSION_RE)?.[1] ?? null;
-        const win = sessions.get(t.key);
+        const win = live.get(t.key);
         t.sessionId = sessionId;
         if (!CLAIMED.includes(t.column)) t.session = win ? (win.alive ? 'running' : 'ended') : null;
         else if (!sessionId) t.session = win ? (win.alive ? 'running' : 'ended') : 'person';
@@ -44,13 +55,21 @@ export function startServer({ repoRoot, port, onListening }) {
     return {
       repo: path.basename(repoRoot),
       repoRoot,
-      tmuxSession: tmuxSessionName(repoRoot),
+      backend: { name: sessions.backend.name, label: sessions.backend.label, inBrowser: Boolean(sessions.backend.inBrowser) },
+      nativeNotifications,
       features: features.map(({ slug, mapTitle, mapPath, tickets }) => ({
         slug, mapTitle, hasMap: Boolean(mapPath),
         tickets: tickets.map(({ key, id, name, title, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, fields, readyForAgent, readyForHuman, needsInfo }) =>
           ({ key, id, name, title, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, readyForAgent, readyForHuman, needsInfo, type: fields.type ?? null })),
       })),
     };
+  }
+
+  // Desktop notification where the OS has a CLI for it; otherwise the page shows one.
+  function notify(title, body) {
+    if (nativeNotifications) return nativeNotify(title, body);
+    const msg = `event: notify\ndata: ${JSON.stringify({ title, body })}\n\n`;
+    for (const res of clients) res.write(msg);
   }
 
   function announce(prev, next) {
@@ -131,7 +150,7 @@ export function startServer({ repoRoot, port, onListening }) {
       const { feature, ticket } = found;
       if (ticket.column !== 'ready') throw httpError(409, `Ticket is ${ticket.column}, not Ready`);
       return act(key, async () => {
-        const result = await launchSession({ repoRoot, feature, ticket, prompt: buildPrompt(feature, ticket, 'grill'), useWorktree: false });
+        const result = await sessions.launch({ feature, ticket, prompt: buildPrompt(feature, ticket, 'grill'), useWorktree: false });
         claimFile(ticket.path, `agent (grill session ${result.sessionId}, ${today()})`, 'grilling');
         return { ok: true, ...result };
       });
@@ -143,8 +162,8 @@ export function startServer({ repoRoot, port, onListening }) {
       const { feature, ticket } = found;
       if (!['ready', 'grilling'].includes(ticket.column)) throw httpError(409, `Ticket is ${ticket.column}, not Ready or Grilling`);
       return act(key, async () => {
-        if (ticket.column === 'grilling') await killSession((await listSessions(repoRoot)).get(key));
-        const result = await launchSession({ repoRoot, feature, ticket, prompt: buildPrompt(feature, ticket, 'implement') });
+        if (ticket.column === 'grilling') await sessions.kill(key);
+        const result = await sessions.launch({ feature, ticket, prompt: buildPrompt(feature, ticket, 'implement') });
         claimFile(ticket.path, `agent (session ${result.sessionId}, ${today()})`, 'in-progress');
         return { ok: true, ...result };
       });
@@ -154,7 +173,7 @@ export function startServer({ repoRoot, port, onListening }) {
       if (!found) throw httpError(404, 'No such Ticket');
       if (!CLAIMED.includes(found.ticket.column)) throw httpError(409, 'Ticket is not Grilling or In progress');
       return act(key, async () => {
-        await killSession((await listSessions(repoRoot)).get(key));
+        await sessions.kill(key);
         releaseFile(found.ticket.path);
         return { ok: true };
       });
@@ -165,31 +184,36 @@ export function startServer({ repoRoot, port, onListening }) {
       const sessionId = found.ticket.assignee.match(SESSION_RE)?.[1];
       if (!sessionId) throw httpError(409, 'This Ticket was not claimed by a Session');
       return act(key, async () => {
-        const existing = (await listSessions(repoRoot)).get(key);
-        if (existing?.alive) throw httpError(409, 'Session is still running');
+        if ((await sessions.list()).get(key)?.alive) throw httpError(409, 'Session is still running');
         const useWorktree = found.ticket.column !== 'grilling';
-        await relaunchSession({ repoRoot, feature: found.feature, ticket: found.ticket, existing, sessionId, useWorktree });
+        await sessions.relaunch({ feature: found.feature, ticket: found.ticket, sessionId, useWorktree });
         return { ok: true };
       });
     },
     async open({ key }) {
-      const existing = (await listSessions(repoRoot)).get(key);
-      if (!existing) throw httpError(404, 'No tmux window for this Ticket');
-      await openTerminal(repoRoot, existing);
-      return { ok: true };
+      try { return { ok: true, ...(await sessions.open(key)) }; }
+      catch (err) { throw httpError(404, err.message); }
     },
   };
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     // Only answer to our own page: blocks DNS rebinding and cross-site POSTs.
-    const host = (req.headers.host ?? '').replace(/:\d+$/, '');
-    if (!['localhost', '127.0.0.1', '[::1]'].includes(host)) return send(res, 403, { error: 'Bad host' });
+    if (!localHost(req)) return send(res, 403, { error: 'Bad host' });
 
     try {
       if (req.method === 'GET' && url.pathname === '/') {
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
         return res.end(fs.readFileSync(PAGE));
+      }
+      if (req.method === 'GET' && url.pathname.startsWith('/vendor/')) {
+        const v = VENDOR[url.pathname.slice(8)];
+        if (!v) return send(res, 404, { error: 'Not found' });
+        res.writeHead(200, { 'content-type': v[1], 'cache-control': 'max-age=3600' });
+        return res.end(fs.readFileSync(path.join(NODE_MODULES, v[0])));
+      }
+      if (req.method === 'GET' && url.pathname === '/api/ping') {
+        return send(res, 200, { app: 'scratchboard', repoRoot, backend: sessions.backend.name, pid: process.pid });
       }
       if (req.method === 'GET' && url.pathname === '/api/events') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
@@ -217,19 +241,41 @@ export function startServer({ repoRoot, port, onListening }) {
     }
   });
 
+  // Browser terminals for the pty backend. A terminal is a shell on this machine, so
+  // only our own page (same host and port) may connect.
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1 << 20 });
+  server.on('upgrade', (req, socket, head) => {
+    const url = new URL(req.url, 'http://localhost');
+    const origin = req.headers.origin ?? '';
+    const sameOrigin = ['localhost', '127.0.0.1', '[::1]'].some((h) => origin === `http://${h}:${listeningPort}`);
+    if (url.pathname !== '/api/term' || !localHost(req) || !sameOrigin || !sessions.backend.attach) {
+      socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+      return socket.destroy();
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => sessions.backend.attach(url.searchParams.get('key') ?? '', ws));
+  });
+
   setInterval(refresh, SCAN_MS);
   try {
     fs.watch(path.join(repoRoot, '.scratch'), { recursive: true }, () => refresh());
   } catch { /* polling covers it */ }
 
-  refresh().then(() => {
+  let listeningPort = port;
+  await refresh();
+  await new Promise((resolve, reject) => {
     server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE' && port < 4760) server.listen(++port, '127.0.0.1');
-      else throw err;
+      if (err.code === 'EADDRINUSE' && listeningPort < port + 20) server.listen(++listeningPort, '127.0.0.1');
+      else reject(err);
     });
-    server.listen(port, '127.0.0.1', () => onListening?.(`http://localhost:${port}`));
+    server.listen(listeningPort, '127.0.0.1', resolve);
   });
-  return server;
+  onListening?.({ url: `http://localhost:${listeningPort}`, port: listeningPort, backend: sessions.backend });
+  return { server, stop: () => { sessions.backend.stopAll?.(); server.close(); } };
+}
+
+function localHost(req) {
+  const host = (req.headers.host ?? '').replace(/:\d+$/, '');
+  return ['localhost', '127.0.0.1', '[::1]'].includes(host);
 }
 
 function httpError(status, message) { return Object.assign(new Error(message), { status }); }
