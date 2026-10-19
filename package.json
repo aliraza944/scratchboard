@@ -1,0 +1,11 @@
+{
+  "name": "scratchboard",
+  "version": "0.1.0",
+  "description": "Live board for the .scratch Tickets that wayfinder and grilling write, with drag-to-launch agent Sessions.",
+  "type": "module",
+  "bin": { "scratchboard": "bin/scratchboard.js" },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 test/*.test.js"
+  },
+  "engines": { "node": ">=20" }
+}

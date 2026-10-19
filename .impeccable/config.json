@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "pulsing-dot",
+        "value": "*",
+        "files": [
+          "/home/sabri/projects/scratchboard/public/index.html"
+        ],
+        "createdAt": "2026-10-19T04:46:42.020Z",
+        "reason": "Claude: the dot pulses only on the 'Session running' chip, which reflects a live tmux process checked every 1.5s, so it marks genuinely live state"
+      }
+    ]
+  }
+}

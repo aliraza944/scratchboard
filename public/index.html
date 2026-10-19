@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scratchboard</title>
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+<style>
+:root {
+  --bg: #f6f5f2; --surface: #ffffff; --surface-2: #efede8; --line: #dedad2;
+  --text: #1d1c1a; --muted: #6b675f; --faint: #9a958b;
+  --accent: #2f5bd3; --ready: #1f7a4d; --ready-bg: #e3f2ea; --blocked: #8a6a1f; --blocked-bg: #f6eed9;
+  --progress: #2f5bd3; --progress-bg: #e6ecfb; --danger: #b3261e; --danger-bg: #fbe7e5;
+  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.04);
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141412; --surface: #1d1c1a; --surface-2: #262522; --line: #34322e;
+    --text: #ecebe7; --muted: #a29e95; --faint: #6f6b63;
+    --accent: #7c9cff; --ready: #5cc995; --ready-bg: #17321f; --blocked: #d9b45c; --blocked-bg: #33290f;
+    --progress: #7c9cff; --progress-bg: #1b2440; --danger: #ff8a80; --danger-bg: #3a1714;
+    --shadow: 0 1px 2px rgba(0,0,0,.4);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); }
+header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 16px; padding: 12px 20px; background: var(--bg); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+header .repo { font-family: var(--mono); color: var(--muted); font-size: 13px; }
+header .spacer { flex: 1; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.live.on i { background: var(--ready); box-shadow: 0 0 0 3px var(--ready-bg); }
+label.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); cursor: pointer; }
+main { padding: 16px 20px 60px; display: grid; gap: 24px; }
+.lane h2 { font-size: 14px; margin: 0 0 2px; font-weight: 650; }
+.lane .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; font-family: var(--mono); }
+.cols { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+.col { background: var(--surface-2); border-radius: 10px; padding: 8px; min-height: 90px; border: 1px dashed transparent; transition: border-color .12s, background .12s; }
+.col.drop-ok { border-color: var(--accent); background: var(--progress-bg); }
+.col h3 { margin: 2px 4px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 650; display: flex; justify-content: space-between; }
+.col .hint { font-size: 12px; color: var(--faint); padding: 6px 4px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; margin-bottom: 8px; box-shadow: var(--shadow); cursor: pointer; }
+.card:hover { border-color: var(--faint); }
+.card[draggable="true"] { cursor: grab; }
+.card.dragging { opacity: .45; }
+.card.selected { outline: 2px solid var(--accent); outline-offset: 1px; }
+.card .top { display: flex; gap: 8px; align-items: baseline; }
+.card .id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.card .title { font-weight: 550; flex: 1; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; align-items: center; }
+.chip { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--surface-2); color: var(--muted); }
+.chip.ready { background: var(--ready-bg); color: var(--ready); }
+.chip.wait { background: var(--blocked-bg); color: var(--blocked); }
+.chip.run { background: var(--progress-bg); color: var(--progress); }
+.chip.run::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 5px; vertical-align: 1px; animation: pulse 1.6s infinite; }
+.chip.ended, .chip.warn { background: var(--danger-bg); color: var(--danger); }
+@keyframes pulse { 50% { opacity: .35; } }
+.actions { display: flex; gap: 6px; margin-top: 8px; }
+button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; }
+button:hover { border-color: var(--faint); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.mini { display: flex; gap: 8px; padding: 4px 6px; font-size: 12px; border-radius: 6px; cursor: pointer; color: var(--muted); }
+.mini:hover { background: var(--surface); color: var(--text); }
+.mini .id { font-family: var(--mono); }
+.mini.selected { background: var(--surface); color: var(--text); }
+aside { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--surface); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.08); transform: translateX(100%); transition: transform .18s ease; z-index: 10; display: flex; flex-direction: column; }
+aside.open { transform: none; }
+aside .bar { display: flex; align-items: center; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+aside .bar .path { font-family: var(--mono); font-size: 11px; color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+aside .rel { padding: 10px 16px; border-bottom: 1px solid var(--line); display: grid; gap: 6px; font-size: 12px; }
+aside .rel b { color: var(--muted); font-weight: 600; margin-right: 6px; }
+aside .rel a { color: var(--accent); cursor: pointer; text-decoration: none; margin-right: 8px; font-family: var(--mono); }
+aside .doc { padding: 4px 20px 40px; overflow: auto; flex: 1; }
+.doc h1 { font-size: 19px; } .doc h2 { font-size: 15px; margin-top: 22px; } .doc table { border-collapse: collapse; font-size: 12px; }
+.doc td, .doc th { border: 1px solid var(--line); padding: 4px 6px; vertical-align: top; }
+.doc code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
+.doc pre { background: var(--surface-2); padding: 10px; border-radius: 6px; overflow: auto; }
+.doc a { color: var(--accent); }
+#toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; }
+#toast.show { opacity: 1; }
+.empty { color: var(--muted); padding: 40px; text-align: center; }
+@media (max-width: 1100px) { .cols { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 760px) { .cols { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 560px) { .cols { grid-template-columns: 1fr; } main, header { padding-left: 16px; padding-right: 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Scratchboard</h1>
+  <span class="repo" id="repo"></span>
+  <span class="spacer"></span>
+  <label class="toggle"><input type="checkbox" id="hideDone"> Hide resolved Features</label>
+  <span class="live" id="live"><i></i><span>connecting</span></span>
+</header>
+<main id="board"><div class="empty">Loading…</div></main>
+<aside id="panel">
+  <div class="bar"><span class="path" id="pPath"></span><span id="pActions"></span><button id="pClose" title="Close">✕</button></div>
+  <div class="rel" id="pRel"></div>
+  <div class="doc" id="pDoc"></div>
+</aside>
+<div id="toast"></div>
+<script>
+const COLS = [['blocked', 'Blocked'], ['ready', 'Ready'], ['grilling', 'Grilling'], ['in-progress', 'In progress'], ['resolved', 'Resolved']];
+const CLAIMED = ['grilling', 'in-progress'];
+// Which drags are allowed, and what each one does.
+const MOVES = { 'ready>grilling': 'grill', 'ready>in-progress': 'launch', 'grilling>in-progress': 'launch', 'grilling>ready': 'release', 'in-progress>ready': 'release' };
+let board = null;
+let selected = null;
+let dragKey = null;
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch {} } };
+
+$('hideDone').checked = store.get('sb.hideDone') === '1';
+$('hideDone').onchange = (e) => { store.set('sb.hideDone', e.target.checked ? '1' : '0'); render(); };
+
+function connect() {
+  const es = new EventSource('/api/events');
+  es.onopen = () => setLive(true);
+  es.onmessage = (e) => { board = JSON.parse(e.data); render(); if (selected) refreshPanel(false); };
+  es.onerror = () => setLive(false);
+}
+function setLive(on) { $('live').classList.toggle('on', on); $('live').querySelector('span').textContent = on ? 'live' : 'reconnecting'; }
+
+function allTickets() { return board ? board.features.flatMap((f) => f.tickets.map((t) => ({ ...t, feature: f.slug }))) : []; }
+function byKey(key) { return allTickets().find((t) => t.key === key); }
+
+function render() {
+  if (!board) return;
+  $('repo').textContent = board.repoRoot;
+  document.title = `Scratchboard · ${board.repo}`;
+  const hide = $('hideDone').checked;
+  const lanes = board.features.filter((f) => !hide || f.tickets.some((t) => t.column !== 'resolved'));
+  if (!lanes.length) { $('board').innerHTML = `<div class="empty">No Tickets in <code>.scratch/*/issues/</code>${hide ? ' that are still open' : ''}.</div>`; return; }
+  $('board').innerHTML = lanes.map(lane).join('');
+  for (const el of document.querySelectorAll('[data-key]')) {
+    el.onclick = (e) => { if (e.target.closest('button')) return; openPanel(el.dataset.key); };
+    el.ondragstart = (e) => { dragKey = el.dataset.key; el.classList.add('dragging'); e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', dragKey); };
+    el.ondragend = () => { dragKey = null; el.classList.remove('dragging'); document.querySelectorAll('.drop-ok').forEach((c) => c.classList.remove('drop-ok')); };
+  }
+  for (const col of document.querySelectorAll('.col')) {
+    col.ondragover = (e) => { if (canDrop(col)) { e.preventDefault(); col.classList.add('drop-ok'); } };
+    col.ondragleave = () => col.classList.remove('drop-ok');
+    col.ondrop = (e) => { e.preventDefault(); col.classList.remove('drop-ok'); onDrop(col); };
+  }
+  for (const b of document.querySelectorAll('button[data-act]')) b.onclick = () => doAction(b.dataset.act, b.dataset.for);
+}
+
+function lane(f) {
+  const counts = Object.fromEntries(COLS.map(([c]) => [c, f.tickets.filter((t) => t.column === c).length]));
+  return `<section class="lane">
+    <h2>${esc(f.mapTitle ?? f.slug)}</h2>
+    <div class="sub">.scratch/${esc(f.slug)} · ${counts.ready} ready · ${counts.grilling} grilling · ${counts['in-progress']} in progress · ${counts.resolved}/${f.tickets.length} resolved</div>
+    <div class="cols">${COLS.map(([c, label]) => `
+      <div class="col" data-col="${c}" data-feature="${esc(f.slug)}">
+        <h3><span>${label}</span><span>${counts[c]}</span></h3>
+        ${f.tickets.filter((t) => t.column === c).map((t) => c === 'resolved' ? mini(t) : card(t)).join('')}
+        ${c === 'grilling' && !counts[c] && counts.ready ? '<div class="hint">Drag a Ready Ticket here to grill it with /grill-me</div>' : ''}
+        ${c === 'in-progress' && !counts[c] && (counts.ready || counts.grilling) ? '<div class="hint">Drag a Ticket here to build it with /implement</div>' : ''}
+      </div>`).join('')}
+    </div></section>`;
+}
+
+function mini(t) {
+  return `<div class="mini ${selected === t.key ? 'selected' : ''}" data-key="${esc(t.key)}"><span class="id">${esc(t.id)}</span><span>${esc(t.title)}</span></div>`;
+}
+
+function card(t) {
+  const draggable = !t.busy && ['ready', ...CLAIMED].includes(t.column);
+  return `<div class="card ${selected === t.key ? 'selected' : ''}" data-key="${esc(t.key)}" draggable="${draggable}">
+    <div class="top"><span class="id">${esc(t.id)}</span><span class="title">${esc(t.title)}</span></div>
+    <div class="meta">${chips(t)}</div>
+    ${actionsFor(t)}
+  </div>`;
+}
+
+function chips(t) {
+  const out = [];
+  if (t.type) out.push(`<span class="chip">${esc(t.type)}</span>`);
+  if (t.needsInfo) out.push('<span class="chip wait">needs info</span>');
+  if (t.readyForHuman) out.push('<span class="chip">ready for human</span>');
+  if (t.column === 'blocked' && t.waitingOn.length) out.push(`<span class="chip wait">waits on ${t.waitingOn.map(esc).join(', ')}</span>`);
+  if (t.readyForAgent && t.column === 'grilling') out.push('<span class="chip ready">grilled · ready for agent</span>');
+  else if (t.readyForAgent && t.column === 'ready') out.push('<span class="chip ready">ready for agent</span>');
+  else if (t.column === 'ready') out.push('<span class="chip ready">ready</span>');
+  if (t.busy) out.push('<span class="chip">working…</span>');
+  else if (t.session === 'running') out.push(`<span class="chip run">${t.column === 'grilling' ? 'grill Session running' : 'Session running'}</span>`);
+  else if (t.session === 'ended' && CLAIMED.includes(t.column)) out.push('<span class="chip ended">Session ended</span>');
+  else if (t.session === 'person') out.push(`<span class="chip">claimed: ${esc(t.assignee)}</span>`);
+  for (const w of t.warnings) out.push(`<span class="chip warn" title="${esc(w)}">⚠ ${esc(w)}</span>`);
+  return out.join('');
+}
+
+function actionsFor(t) {
+  if (t.busy) return '';
+  const k = esc(t.key);
+  // A resolved Ticket's Session window may still be open: let it be reached.
+  if (!CLAIMED.includes(t.column)) return t.session === 'running' || t.session === 'ended' ? `<div class="actions"><button data-act="open" data-for="${k}">Open Session</button></div>` : '';
+  const btns = [];
+  if (t.session === 'running' || t.session === 'ended') btns.push(`<button data-act="open" data-for="${k}">Open</button>`);
+  if (t.session === 'ended' && t.sessionId) btns.push(`<button data-act="relaunch" data-for="${k}">Relaunch</button>`);
+  btns.push(`<button data-act="release" data-for="${k}">Release</button>`);
+  return `<div class="actions">${btns.join('')}</div>`;
+}
+
+function moveFor(col) {
+  const t = dragKey && byKey(dragKey);
+  if (!t || col.dataset.feature !== t.feature) return null;
+  return MOVES[`${t.column}>${col.dataset.col}`] ?? null;
+}
+function canDrop(col) { return Boolean(moveFor(col)); }
+function onDrop(col) { const act = moveFor(col); if (act) doAction(act, dragKey); }
+
+async function doAction(act, key) {
+  const t = byKey(key);
+  if (act === 'launch' && t.column === 'grilling') {
+    const msg = (t.readyForAgent ? '' : `${t.id} isn't marked ready-for-agent yet, so the grill Session may not have written its Agent Brief.\n\n`)
+      + (t.session === 'running' ? 'Its grill Session is still open and will be closed.\n\n' : '')
+      + `Start /implement on ${t.id}?`;
+    if ((!t.readyForAgent || t.session === 'running') && !confirm(msg)) return;
+  }
+  if (act === 'release') {
+    const msg = t.session === 'running'
+      ? `Release ${t.id}? Its Session is still running, and releasing closes its tmux window.`
+      : t.session === 'person' ? `Release ${t.id}? It's claimed by "${t.assignee}". Releasing clears that claim.` : `Release ${t.id} back to Ready?`;
+    if (!confirm(msg)) return;
+  }
+  try {
+    const res = await fetch(`/api/${act}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-scratchboard': '1' }, body: JSON.stringify({ key }) });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error);
+    toast({ grill: `Grilling ${t.id}: /grill-me starting in tmux ${board.tmuxSession}. Press Open to join`, launch: `Building ${t.id}: /implement starting in tmux ${board.tmuxSession}`, release: `Released ${t.id}`, relaunch: `Relaunched ${t.id}`, open: `Opening ${t.id} in a terminal` }[act]);
+  } catch (err) { toast(`Couldn't ${act} ${t?.id ?? ''}: ${err.message}`); }
+}
+
+let toastTimer;
+function toast(msg) { const el = $('toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 3500); }
+
+async function openPanel(key) { selected = key; render(); $('panel').classList.add('open'); await refreshPanel(true); }
+let lastMd = null;
+async function refreshPanel(force) {
+  const t = byKey(selected);
+  if (!t) return closePanel();
+  const link = (id) => { const x = allTickets().find((y) => y.feature === t.feature && y.id === id); return x ? `<a data-goto="${esc(x.key)}" title="${esc(x.title)}">${esc(id)}${x.column === 'resolved' ? ' ✓' : ''}</a>` : esc(id); };
+  $('pRel').innerHTML = `
+    <div><b>Column</b>${esc(COLS.find(([c]) => c === t.column)[1])}${t.statusRaw ? ` · Status: ${esc(t.statusRaw)}` : ''}${t.assignee ? ` · ${esc(t.assignee)}` : ''}</div>
+    <div><b>Blocked by</b>${t.blockerIds.length ? t.blockerIds.map(link).join('') : 'nothing'}</div>
+    <div><b>Blocks</b>${t.blocks.length ? t.blocks.map(link).join('') : 'nothing'}</div>
+    ${t.session && t.session !== 'person' ? `<div><b>Session</b>${t.session}${t.sessionId ? ` · <code>${esc(t.sessionId)}</code>` : ''}</div>` : ''}`;
+  for (const a of $('pRel').querySelectorAll('[data-goto]')) a.onclick = () => openPanel(a.dataset.goto);
+  $('pActions').innerHTML = actionsFor(t).replace('class="actions"', 'class="actions" style="margin:0"');
+  for (const b of $('pActions').querySelectorAll('button[data-act]')) b.onclick = () => doAction(b.dataset.act, b.dataset.for);
+  try {
+    const res = await fetch(`/api/ticket?key=${encodeURIComponent(selected)}`);
+    const { markdown, path } = await res.json();
+    if (!force && markdown === lastMd) return;
+    lastMd = markdown;
+    $('pPath').textContent = path;
+    $('pDoc').innerHTML = window.marked && window.DOMPurify ? DOMPurify.sanitize(marked.parse(markdown)) : `<pre>${esc(markdown)}</pre>`;
+  } catch { $('pDoc').textContent = 'Could not load the Ticket.'; }
+}
+function closePanel() { selected = null; lastMd = null; $('panel').classList.remove('open'); render(); }
+$('pClose').onclick = closePanel;
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closePanel(); });
+
+connect();
+</script>
+</body>
+</html>
