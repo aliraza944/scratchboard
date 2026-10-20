@@ -6,6 +6,15 @@
   "bin": {
     "scratchboard": "bin/scratchboard.js"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "public/",
+    "prompt-grill.md",
+    "prompt-implement.md",
+    "GLOSSARY.md",
+    "docs/"
+  ],
   "scripts": {
     "test": "node --test --test-concurrency=1 test/*.test.js"
   },

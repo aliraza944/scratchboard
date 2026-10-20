@@ -2,6 +2,18 @@
 
 A live board of the Tickets in a repo's `.scratch/<feature>/issues/`, the ones that the wayfinder, grilling and to-tickets skills write. Drag a Ready Ticket to In progress to start a `claude` Session on it in tmux. Vocabulary: [GLOSSARY.md](GLOSSARY.md).
 
+## Install
+
+Install it globally as a copy (on Windows, macOS and Linux npm creates the `scratchboard` command for you):
+
+```bash
+npm pack && npm install -g ./scratchboard-0.1.0.tgz
+```
+
+After changing the code, run that again to update the installed copy. (`npm install -g .` would link to this folder instead of copying it.) Windows and macOS get prebuilt node-pty binaries; Linux compiles it, which needs a C++ toolchain and Python. With nvm, the command belongs to the Node version that was active when you installed it.
+
+## Use
+
 ```bash
 scratchboard                 # the board for this directory, started in the background
 scratchboard ~/projects/foo  # or for another directory
@@ -10,7 +22,7 @@ scratchboard stop            # stop this directory's board
 
 Options: `--port N` (default 4747, or the next free one), `--backend auto|tmux|pty`, `--no-open`, `--foreground`. One board runs per directory; running `scratchboard` again just reopens it. Logs and state files live in `~/.local/state/scratchboard/` (`%LOCALAPPDATA%\scratchboard` on Windows).
 
-**Sessions** run in **tmux** when it's installed, otherwise in a **built-in terminal** shown in the board's Session tab (node-pty, works on Windows, macOS and Linux). See [ADR 0002](docs/adr/0002-tmux-first-pty-fallback.md). Install with `npm install` (Windows and macOS get prebuilt node-pty binaries; Linux compiles it, which needs a C++ toolchain and Python).
+**Sessions** run in **tmux** when it's installed, otherwise in a **built-in terminal** shown in the board's Session tab (node-pty, works on Windows, macOS and Linux). See [ADR 0002](docs/adr/0002-tmux-first-pty-fallback.md). 
 
 
 - **Where Tickets are read from**: the skills' local-markdown tracker convention (setup-matt-pocock-skills). That means `.scratch/<feature>/issues/NN-slug.md` (wayfinder, to-tickets), plus any `.md` directly in `.scratch/<feature>/` that has a `Status:` line (what triage and to-spec write when they "publish to the issue tracker"). `map.md` and `spec.md` are never Tickets. Status words: `open`, `needs-triage`, `ready-for-agent` and `ready-for-human` are open; `claimed`, `grilling` and `in-progress` are claimed; `needs-info` is Blocked; `resolved`, `closed` and `wontfix` are Resolved.
