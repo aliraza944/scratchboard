@@ -99,7 +99,8 @@ function splitOutsideBrackets(s) {
 const stripLink = (s) => s.replace(/^\[(.*)\]\(.*\)$/, '$1').replace(/^\d{1,4}:\s*/, '').trim();
 const pad = (n) => String(Number(n)).padStart(2, '0');
 
-// Reads every `.scratch/<feature>/issues/*.md` under repoRoot.
+// Reads every `.scratch/<feature>/issues/*.md` under repoRoot. A Feature with a Map
+// but no Tickets yet still counts: a chart Session can turn it into Tickets.
 export function readBoard(repoRoot) {
   const scratch = path.join(repoRoot, '.scratch');
   const features = [];
@@ -109,7 +110,7 @@ export function readBoard(repoRoot) {
     if (!e.isDirectory()) continue;
     const dir = path.join(scratch, e.name);
     const feature = readFeature(e.name, dir, path.join(dir, 'issues'));
-    if (feature.tickets.length) features.push(feature);
+    if (feature.tickets.length || feature.mapPath) features.push(feature);
   }
   features.sort((a, b) => a.slug.localeCompare(b.slug));
   return features;
@@ -126,9 +127,13 @@ function ticketFiles(dir, issuesDir) {
 function readFeature(slug, dir, issuesDir) {
   const mapPath = path.join(dir, 'map.md');
   let mapTitle = null;
-  if (fs.existsSync(mapPath)) {
-    const first = fs.readFileSync(mapPath, 'utf8').split(/\r?\n/).find((l) => l.startsWith('# '));
+  let hasFog = false;
+  const hasMap = fs.existsSync(mapPath);
+  if (hasMap) {
+    const text = fs.readFileSync(mapPath, 'utf8');
+    const first = text.split(/\r?\n/).find((l) => l.startsWith('# '));
     if (first) mapTitle = first.slice(2).replace(/^Map:\s*/i, '').trim();
+    hasFog = mapHasFog(text);
   }
   const raw = [];
   for (const filePath of ticketFiles(dir, issuesDir)) {
@@ -155,13 +160,30 @@ function readFeature(slug, dir, issuesDir) {
   const tickets = raw.map((t) => {
     const status = normalizeStatus(t.fields.status);
     const blockers = parseBlockedBy(t.fields.blockedBy, byTitle);
-    return { ...t, statusRaw: t.fields.status ?? null, state: status.state, statusKnown: status.known, blockerIds: blockers.ids, blockersUnparsed: blockers.unparsed };
+    // wayfinder gives each Decision Ticket a Type line; to-tickets' Build Tickets have none.
+    const kind = t.fields.type ? 'decision' : 'build';
+    return { ...t, kind, statusRaw: t.fields.status ?? null, state: status.state, statusKnown: status.known, blockerIds: blockers.ids, blockersUnparsed: blockers.unparsed };
   });
   for (const t of tickets) Object.assign(t, deriveColumn(t, byId, tickets));
   const blocks = new Map();
   for (const t of tickets) for (const b of t.blockerIds) (blocks.get(b) ?? blocks.set(b, []).get(b)).push(t.id);
   for (const t of tickets) t.blocks = blocks.get(t.id) ?? [];
-  return { slug, dir, mapPath: fs.existsSync(mapPath) ? mapPath : null, mapTitle, tickets };
+  return { slug, dir, mapPath: hasMap ? mapPath : null, mapTitle, hasFog, mapAction: hasMap ? mapAction(tickets, hasFog) : null, tickets };
+}
+
+// Which Map Session the lane offers first: chart while there's nothing or Fog left to
+// ticket, slice once every decision is made and nothing has been sliced yet.
+function mapAction(tickets, hasFog) {
+  if (!tickets.length || hasFog) return 'chart';
+  const decisions = tickets.filter((t) => t.kind === 'decision');
+  const decided = decisions.length && decisions.every((t) => t.state === 'resolved');
+  return decided && decisions.length === tickets.length ? 'slice' : null;
+}
+
+// Fog is whatever the Map's "Not yet specified" section holds besides comments and blank lines.
+function mapHasFog(text) {
+  const m = text.match(/^#{2,3}\s+not yet specified\b.*$([\s\S]*?)(?=^#{1,3}\s|(?![\s\S]))/im);
+  return Boolean(m && m[1].replace(/<!--[\s\S]*?-->/g, '').trim());
 }
 
 function deriveColumn(t, byId, tickets) {
@@ -186,4 +208,10 @@ function deriveColumn(t, byId, tickets) {
   else column = waitingOn.length ? 'blocked' : 'ready';
   const readyForHuman = /^ready[- ]for[- ]human\b/i.test(t.fields.status?.replace(/[`*_]/g, '').trim() ?? '');
   return { column, waitingOn, warnings, assignee, readyForAgent, readyForHuman, needsInfo: t.state === 'needs-info' };
+}
+
+// The number a new Ticket in this Feature gets: one past the highest numbered Ticket.
+export function nextTicketNumber(feature) {
+  const nums = feature.tickets.filter((t) => t.numbered).map((t) => Number(t.id));
+  return pad(Math.max(0, ...nums) + 1);
 }

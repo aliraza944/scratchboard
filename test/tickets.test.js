@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeStatus, parseTicketText, parseBlockedBy, readBoard } from '../src/tickets.js';
+import { normalizeStatus, parseTicketText, parseBlockedBy, readBoard, nextTicketNumber } from '../src/tickets.js';
 import { claimText, releaseText } from '../src/claims.js';
 
 test('normalizeStatus maps the words different skills use', () => {
@@ -119,4 +119,70 @@ test('reads loose ticket files beside map.md, and triage status words', () => {
   assert.equal(t['dark-mode'].column, 'ready');
   assert.equal(t['dark-mode'].readyForHuman, true);
   assert.equal(t['dark-mode'].relPath, 'dark-mode.md');
+});
+
+const scratchTree = (features) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-'));
+  for (const [slug, files] of Object.entries(features)) {
+    const dir = path.join(root, '.scratch', slug);
+    fs.mkdirSync(path.join(dir, 'issues'), { recursive: true });
+    for (const [f, body] of Object.entries(files)) fs.writeFileSync(path.join(dir, f), body);
+  }
+  return root;
+};
+
+test('a Feature with only a Map is on the board, an empty folder is not', () => {
+  const root = scratchTree({ charted: { 'map.md': '# Map: Charted\n\n## Destination\nx\n' }, empty: {} });
+  const board = readBoard(root);
+  assert.deepEqual(board.map((f) => f.slug), ['charted']);
+  assert.equal(board[0].mapTitle, 'Charted');
+  assert.deepEqual(board[0].tickets, []);
+});
+
+test('Fog is what the Map lists under Not yet specified, ignoring comments and blank lines', () => {
+  const map = (fog) => `# Map: M\n\n## Destination\nx\n\n## Not yet specified\n${fog}\n## Out of scope\n- far away\n`;
+  const root = scratchTree({
+    foggy: { 'map.md': map('\n<!-- see Fog of war -->\n- how billing works\n') },
+    clear: { 'map.md': map('\n<!-- see "Fog of war": in-scope fog\n     you cannot ticket yet -->\n\n') },
+    titled: { 'map.md': '# Map: T\n\n### Not yet specified (Fog)\n- refunds\n' },
+    nosection: { 'map.md': '# Map: N\n\n## Destination\nx\n' },
+  });
+  const fog = Object.fromEntries(readBoard(root).map((f) => [f.slug, f.hasFog]));
+  assert.deepEqual(fog, { clear: false, foggy: true, nosection: false, titled: true });
+});
+
+test('Decision Tickets carry a Type line, Build Tickets do not', () => {
+  const root = scratchTree({ f: { 'map.md': '# Map: F\n' } });
+  const issues = path.join(root, '.scratch', 'f', 'issues');
+  fs.writeFileSync(path.join(issues, '01-q.md'), '# Q\n\nType: grilling\nStatus: resolved\n');
+  fs.writeFileSync(path.join(issues, '02-b.md'), '# 02: B\n\n**What to build:** x\n\n**Status:** ready-for-agent\n');
+  const kinds = Object.fromEntries(readBoard(root)[0].tickets.map((t) => [t.id, t.kind]));
+  assert.deepEqual(kinds, { '01': 'decision', '02': 'build' });
+});
+
+test('the main Map action is chart, slice or none, from the Map state', () => {
+  const fog = '# Map: M\n\n## Not yet specified\n- later\n';
+  const clear = '# Map: M\n\n## Not yet specified\n<!-- none -->\n';
+  const decision = (status) => `# D\n\nType: research\nStatus: ${status}\n`;
+  const build = '# 03: B\n\n**Status:** ready-for-agent\n';
+  const root = scratchTree({
+    bare: { 'map.md': clear },
+    foggy: { 'map.md': fog, 'issues/01-d.md': decision('resolved') },
+    open: { 'map.md': clear, 'issues/01-d.md': decision('resolved'), 'issues/02-d.md': decision('open') },
+    decided: { 'map.md': clear, 'issues/01-d.md': decision('resolved'), 'issues/02-d.md': decision('closed') },
+    sliced: { 'map.md': clear, 'issues/01-d.md': decision('resolved'), 'issues/03-b.md': build },
+    nomap: { 'issues/01-d.md': decision('open') },
+  });
+  const action = Object.fromEntries(readBoard(root).map((f) => [f.slug, f.mapAction]));
+  assert.deepEqual(action, { bare: 'chart', decided: 'slice', foggy: 'chart', nomap: null, open: null, sliced: null });
+});
+
+test('nextTicketNumber continues after the highest numbered Ticket', () => {
+  const t = '# T\n\nType: task\nStatus: open\n';
+  const root = scratchTree({
+    none: { 'map.md': '# Map: N\n' },
+    some: { 'map.md': '# Map: S\n', 'issues/01-a.md': t, 'issues/05-e.md': t, 'issues/03-c.md': t, 'loose.md': '# L\n\nStatus: open\n' },
+  });
+  const next = Object.fromEntries(readBoard(root).map((f) => [f.slug, nextTicketNumber(f)]));
+  assert.deepEqual(next, { none: '01', some: '06' });
 });

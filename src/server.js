@@ -4,9 +4,10 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readBoard } from './tickets.js';
 import { claimFile, releaseFile } from './claims.js';
-import { createSessions, ticketKey } from './sessions.js';
+import { readBoard, nextTicketNumber } from './tickets.js';
+import { renderPrompt } from './prompts.js';
+import { createSessions, ticketKey, mapTarget, mapKey } from './sessions.js';
 import { notify as nativeNotify, nativeNotifications } from './platform.js';
 import { WebSocketServer } from 'ws';
 
@@ -21,9 +22,6 @@ const VENDOR = {
   'marked.js': ['marked/lib/marked.umd.js', 'text/javascript'],
   'purify.js': ['dompurify/dist/purify.min.js', 'text/javascript'],
 };
-// Ready -> Grilling runs /grill-me; anything -> In progress runs /implement.
-const DEFAULT_PROMPTS = { grill: path.join(here, '..', 'prompt-grill.md'), implement: path.join(here, '..', 'prompt-implement.md') };
-const REPO_PROMPTS = { grill: 'scratchboard-prompt-grill.md', implement: 'scratchboard-prompt-implement.md' };
 const CLAIMED = ['grilling', 'in-progress'];
 const today = () => new Date().toISOString().slice(0, 10);
 const SCAN_MS = 1500;
@@ -36,6 +34,9 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
   let snapshotJson = '';
   let previous = null;
   let busy = new Set(); // ticket keys with an action in flight
+  // Map Sessions claim nothing in a file, so their kind and id live here only, for
+  // Relaunch and the end-of-Session notice. They're gone when the board stops.
+  const mapSessions = new Map(); // slug -> { kind, sessionId, ticketsAtLaunch: Set of Ticket names }
 
   async function scan() {
     const features = readBoard(repoRoot);
@@ -51,16 +52,23 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         else t.session = win?.alive ? 'running' : 'ended';
         t.busy = busy.has(t.key);
       }
+      f.mapKey = mapKey(f.slug);
+      const win = live.get(f.mapKey);
+      const known = mapSessions.get(f.slug);
+      f.mapSession = f.mapPath && win
+        ? { status: win.alive ? 'running' : 'ended', kind: known?.kind ?? null, canRelaunch: Boolean(known) }
+        : null;
+      f.mapBusy = busy.has(f.mapKey);
     }
     return {
       repo: path.basename(repoRoot),
       repoRoot,
       backend: { name: sessions.backend.name, label: sessions.backend.label, inBrowser: Boolean(sessions.backend.inBrowser) },
       nativeNotifications,
-      features: features.map(({ slug, mapTitle, mapPath, tickets }) => ({
-        slug, mapTitle, hasMap: Boolean(mapPath),
-        tickets: tickets.map(({ key, id, name, title, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, fields, readyForAgent, readyForHuman, needsInfo }) =>
-          ({ key, id, name, title, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, readyForAgent, readyForHuman, needsInfo, type: fields.type ?? null })),
+      features: features.map(({ slug, mapTitle, mapPath, hasFog, mapAction, mapKey, mapSession, mapBusy, tickets }) => ({
+        slug, mapTitle, hasMap: Boolean(mapPath), hasFog, mapAction, mapKey, mapSession, mapBusy,
+        tickets: tickets.map(({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, fields, readyForAgent, readyForHuman, needsInfo }) =>
+          ({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, readyForAgent, readyForHuman, needsInfo, type: fields.type ?? null })),
       })),
     };
   }
@@ -84,6 +92,12 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         else if (t.column === 'ready' && o.column === 'blocked') notify('Ticket is Ready', label);
         else if (t.column === 'grilling' && t.readyForAgent && !o.readyForAgent) notify('Grilling done', `${label} is ready for agent`);
         if (o.session === 'running' && t.session === 'ended' && t.column !== 'resolved') notify('Session ended', `${label} isn't resolved yet`);
+      }
+      // New Tickets bring their own notices; a Map Session that wrote none is worth one.
+      const was = prev.features.find((x) => x.slug === f.slug)?.mapSession?.status;
+      const known = mapSessions.get(f.slug);
+      if (was === 'running' && f.mapSession?.status === 'ended' && known && f.tickets.every((t) => known.ticketsAtLaunch.has(t.name))) {
+        notify('Map Session ended', `The ${known.kind} Session on ${f.mapTitle ?? f.slug} wrote no new Tickets`);
       }
     }
   }
@@ -109,9 +123,26 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
     return null;
   }
 
+  // Only Features with a Map: those are the ones a chart or slice Session can work on.
+  function findFeature(slug) {
+    return readBoard(repoRoot).find((f) => f.slug === slug && f.mapPath) ?? null;
+  }
+  function findMap(key) {
+    return readBoard(repoRoot).find((f) => f.mapPath && mapKey(f.slug) === key) ?? null;
+  }
+
+  function buildMapPrompt(feature, kind) {
+    const vars = {
+      mapPath: feature.mapPath,
+      mapTitle: feature.mapTitle ?? feature.slug,
+      feature: feature.slug,
+      issuesDir: path.join(feature.dir, 'issues'),
+      nextNumber: nextTicketNumber(feature),
+    };
+    return (cwd) => renderPrompt(repoRoot, kind, { ...vars, cwd });
+  }
+
   function buildPrompt(feature, ticket, kind) {
-    const repoTemplate = path.join(repoRoot, '.scratch', REPO_PROMPTS[kind]);
-    const template = fs.readFileSync(fs.existsSync(repoTemplate) ? repoTemplate : DEFAULT_PROMPTS[kind], 'utf8');
     return (cwd) => {
       const inWorktree = cwd !== repoRoot;
       const vars = {
@@ -131,12 +162,12 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
           ? `You are in a git worktree (${cwd}) on your own branch, so write code here. Always edit the Ticket and the map at the absolute paths above, in the main checkout, never the worktree's copies.`
           : 'Other Sessions may be working in this same folder on other Tickets. Only touch the files your Ticket needs.',
       };
-      return template.replace(/\{\{(\w+)\}\}/g, (_, k) => vars[k] ?? '');
+      return renderPrompt(repoRoot, kind, vars);
     };
   }
 
   async function act(key, fn) {
-    if (busy.has(key)) throw httpError(409, 'Already working on that Ticket');
+    if (busy.has(key)) throw httpError(409, 'Already working on that Ticket or Map');
     busy.add(key);
     refresh();
     try { return await fn(); } finally { busy.delete(key); refresh(); }
@@ -190,11 +221,47 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         return { ok: true };
       });
     },
+    // A chart (/wayfinder) or slice (/to-tickets) Session on a Map, in the main checkout.
+    // Nothing is claimed in map.md: while the Session runs, no other one can be Launched on the Map.
+    async chart({ slug }) { return launchMap(slug, 'chart'); },
+    async slice({ slug }) { return launchMap(slug, 'slice'); },
+    async relaunchMap({ slug }) {
+      const feature = findFeature(slug);
+      if (!feature) throw httpError(404, 'No such Map');
+      const known = mapSessions.get(slug);
+      if (!known) throw httpError(409, 'No Session to relaunch on this Map (it was closed, or the board restarted). Start a new one instead');
+      const key = mapKey(slug);
+      return act(key, async () => {
+        if ((await sessions.list()).get(key)?.alive) throw httpError(409, 'Session is still running');
+        await sessions.relaunch({ feature, ticket: mapTarget(slug), sessionId: known.sessionId, useWorktree: false });
+        return { ok: true };
+      });
+    },
+    async stopMap({ slug }) {
+      const key = mapKey(slug);
+      return act(key, async () => {
+        await sessions.kill(key);
+        mapSessions.delete(slug);
+        return { ok: true };
+      });
+    },
     async open({ key }) {
       try { return { ok: true, ...(await sessions.open(key)) }; }
       catch (err) { throw httpError(404, err.message); }
     },
   };
+
+  async function launchMap(slug, kind) {
+    const feature = findFeature(slug);
+    if (!feature) throw httpError(404, 'No such Map');
+    const key = mapKey(slug);
+    return act(key, async () => {
+      if ((await sessions.list()).get(key)?.alive) throw httpError(409, 'A Session is already running on this Map');
+      const result = await sessions.launch({ feature, ticket: mapTarget(slug), prompt: buildMapPrompt(feature, kind), useWorktree: false });
+      mapSessions.set(slug, { kind, sessionId: result.sessionId, ticketsAtLaunch: new Set(feature.tickets.map((t) => t.name)) });
+      return { ok: true, ...result };
+    });
+  }
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
@@ -224,7 +291,10 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/ticket') {
-        const found = findTicket(url.searchParams.get('key') ?? '');
+        const key = url.searchParams.get('key') ?? '';
+        const map = findMap(key);
+        if (map) return send(res, 200, { markdown: fs.readFileSync(map.mapPath, 'utf8'), path: map.mapPath });
+        const found = findTicket(key);
         if (!found) return send(res, 404, { error: 'No such Ticket' });
         return send(res, 200, { markdown: fs.readFileSync(found.ticket.path, 'utf8'), path: found.ticket.path });
       }

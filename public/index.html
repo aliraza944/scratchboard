@@ -40,6 +40,10 @@ header .spacer { flex: 1; }
 label.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); cursor: pointer; }
 main { padding: 16px 20px 60px; display: grid; gap: 24px; }
 .lane h2 { font-size: 14px; margin: 0 0 2px; font-weight: 650; }
+.lane h2[data-key] { cursor: pointer; }
+.lane h2[data-key]:hover { color: var(--accent); }
+.mapbar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: -4px 0 10px; }
+.mapbar .note { font-size: 12px; color: var(--muted); }
 .lane .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; font-family: var(--mono); }
 .cols { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
 .col { background: var(--surface-2); border-radius: 10px; padding: 8px; min-height: 90px; border: 1px dashed transparent; transition: border-color .12s, background .12s; }
@@ -66,6 +70,7 @@ main { padding: 16px 20px 60px; display: grid; gap: 24px; }
 button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; }
 button:hover { border-color: var(--faint); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.quiet { font-size: 11px; padding: 2px 7px; color: var(--muted); }
 button:disabled { opacity: .5; cursor: default; }
 .mini { display: flex; gap: 8px; padding: 4px 6px; font-size: 12px; border-radius: 6px; cursor: pointer; color: var(--muted); }
 .mini:hover { background: var(--surface); color: var(--text); }
@@ -154,8 +159,9 @@ function render() {
   $('repo').textContent = board.repoRoot;
   document.title = `Scratchboard · ${board.repo}`;
   const hide = $('hideDone').checked;
-  const lanes = board.features.filter((f) => !hide || f.tickets.some((t) => t.column !== 'resolved'));
-  if (!lanes.length) { $('board').innerHTML = `<div class="empty">No Tickets in <code>.scratch/*/issues/</code>${hide ? ' that are still open' : ''}.</div>`; return; }
+  // A lane with a Map stays in view: there's always a Map Session to offer on it.
+  const lanes = board.features.filter((f) => !hide || f.hasMap || f.tickets.some((t) => t.column !== 'resolved'));
+  if (!lanes.length) { $('board').innerHTML = `<div class="empty">No Tickets in <code>.scratch/*/issues/</code> and no <code>.scratch/*/map.md</code>${hide ? ' that are still open' : ''}.</div>`; return; }
   $('board').innerHTML = lanes.map(lane).join('');
   for (const el of document.querySelectorAll('[data-key]')) {
     el.onclick = (e) => { if (e.target.closest('button')) return; openPanel(el.dataset.key); };
@@ -168,13 +174,15 @@ function render() {
     col.ondrop = (e) => { e.preventDefault(); col.classList.remove('drop-ok'); onDrop(col); };
   }
   for (const b of document.querySelectorAll('button[data-act]')) b.onclick = () => doAction(b.dataset.act, b.dataset.for);
+  for (const b of document.querySelectorAll('button[data-map-act]')) b.onclick = () => doMapAction(b.dataset.mapAct, b.dataset.slug);
 }
 
 function lane(f) {
   const counts = Object.fromEntries(COLS.map(([c]) => [c, f.tickets.filter((t) => t.column === c).length]));
   return `<section class="lane">
-    <h2>${esc(f.mapTitle ?? f.slug)}</h2>
+    <h2 ${f.hasMap ? `data-key="${esc(f.mapKey)}" title="Show the Map"` : ''}>${esc(f.mapTitle ?? f.slug)}</h2>
     <div class="sub">.scratch/${esc(f.slug)} · ${counts.ready} ready · ${counts.grilling} grilling · ${counts['in-progress']} in progress · ${counts.resolved}/${f.tickets.length} resolved</div>
+    ${mapBar(f)}
     <div class="cols">${COLS.map(([c, label]) => `
       <div class="col" data-col="${c}" data-feature="${esc(f.slug)}">
         <h3><span>${label}</span><span>${counts[c]}</span></h3>
@@ -183,6 +191,61 @@ function lane(f) {
         ${c === 'in-progress' && !counts[c] && (counts.ready || counts.grilling) ? '<div class="hint">Drag a Ticket here to build it with /implement</div>' : ''}
       </div>`).join('')}
     </div></section>`;
+}
+
+// --- Map Sessions: chart (/wayfinder) and slice (/to-tickets) ---
+const MAP_SKILLS = { chart: 'Chart with /wayfinder', slice: 'Slice with /to-tickets' };
+const MAP_HINTS = {
+  chart: (f) => f.tickets.length ? 'The Map has Fog to turn into Decision Tickets.' : 'This Map has no Tickets yet.',
+  slice: () => 'Every decision is made: slice the Map into Build Tickets.',
+};
+function byMap(key) { return board?.features.find((f) => f.hasMap && f.mapKey === key) ?? null; }
+
+function mapBar(f) {
+  if (!f.hasMap) return '';
+  return `<div class="mapbar">${mapControls(f, true)}</div>`;
+}
+
+function mapControls(f, withHint) {
+  const s = esc(f.slug);
+  if (f.mapBusy) return '<span class="chip">working…</span>';
+  const out = [];
+  const ms = f.mapSession;
+  const kind = ms?.kind ? `${ms.kind} Session` : 'Map Session';
+  if (ms?.status === 'running') {
+    out.push(`<span class="chip run">${kind} running</span>`);
+    out.push(`<button data-map-act="open" data-slug="${s}">Open</button>`, `<button data-map-act="stopMap" data-slug="${s}">Stop</button>`);
+    return out.join('');
+  }
+  if (ms?.status === 'ended') {
+    out.push(`<span class="chip ended">${kind} ended</span>`, `<button data-map-act="open" data-slug="${s}">Open</button>`);
+    if (ms.canRelaunch) out.push(`<button data-map-act="relaunchMap" data-slug="${s}">Relaunch</button>`);
+    out.push(`<button data-map-act="stopMap" data-slug="${s}">Close</button>`);
+  }
+  // The main action first, then the other skill in case the board's guess is wrong.
+  const order = f.mapAction === 'slice' ? ['slice', 'chart'] : ['chart', 'slice'];
+  for (const k of order) out.push(`<button data-map-act="${k}" data-slug="${s}" class="${k === f.mapAction ? 'primary' : f.mapAction ? 'quiet' : ''}">${MAP_SKILLS[k]}</button>`);
+  if (withHint && f.mapAction && !ms) out.push(`<span class="note">${esc(MAP_HINTS[f.mapAction](f))}</span>`);
+  return out.join('');
+}
+
+async function doMapAction(act, slug) {
+  const f = board.features.find((x) => x.slug === slug);
+  if (!f) return;
+  const name = f.mapTitle ?? f.slug;
+  if (act === 'stopMap' && f.mapSession?.status === 'running' && !confirm(`Stop the ${f.mapSession.kind ?? 'Map'} Session on ${name}? Its window is closed.`)) return;
+  if ((act === 'chart' || act === 'slice') && f.mapAction && act !== f.mapAction && !confirm(`The board suggests ${MAP_SKILLS[f.mapAction]} for ${name}. Start ${MAP_SKILLS[act]} anyway?`)) return;
+  try {
+    const body = act === 'open' ? { key: f.mapKey } : { slug };
+    const res = await fetch(`/api/${act}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-scratchboard': '1' }, body: JSON.stringify(body) });
+    const out = await res.json();
+    if (!res.ok) throw new Error(out.error);
+    if (!board.nativeNotifications && window.Notification?.permission === 'default') Notification.requestPermission();
+    const where = board.backend.label;
+    toast({ chart: `Charting ${name}: /wayfinder starting in ${where}. Press Open to join`, slice: `Slicing ${name}: /to-tickets starting in ${where}. Press Open to join`, relaunchMap: `Relaunched the Session on ${name}`, stopMap: `Closed the Session on ${name}`, open: out.inBrowser ? '' : `Opening ${name}'s Session in a terminal` }[act] || '');
+    if (out.inBrowser || ((act === 'chart' || act === 'slice') && board.backend.inBrowser)) { await openPanel(f.mapKey); showTab('session'); }
+    if (act === 'relaunchMap' && selected === f.mapKey && tab === 'session') connectTerm(f.mapKey);
+  } catch (err) { toast(`Couldn't ${act} ${name}: ${err.message}`); }
 }
 
 function mini(t) {
@@ -271,7 +334,10 @@ async function openPanel(key) {
 let lastMd = null;
 async function refreshPanel(force) {
   const t = byKey(selected);
-  if (!t) return closePanel();
+  const f = t ? null : byMap(selected);
+  if (!t && !f) return closePanel();
+  $('pTabs').querySelector('[data-tab="ticket"]').textContent = f ? 'Map' : 'Ticket';
+  if (f) return refreshMapPanel(f, force);
   const link = (id) => { const x = allTickets().find((y) => y.feature === t.feature && y.id === id); return x ? `<a data-goto="${esc(x.key)}" title="${esc(x.title)}">${esc(id)}${x.column === 'resolved' ? ' ✓' : ''}</a>` : esc(id); };
   $('pRel').innerHTML = `
     <div><b>Column</b>${esc(COLS.find(([c]) => c === t.column)[1])}${t.statusRaw ? ` · Status: ${esc(t.statusRaw)}` : ''}${t.assignee ? ` · ${esc(t.assignee)}` : ''}</div>
@@ -286,6 +352,9 @@ async function refreshPanel(force) {
   if (tab === 'session' && termKey !== selected && hasTerm) connectTerm(selected);
   $('pActions').innerHTML = actionsFor(t).replace('class="actions"', 'class="actions" style="margin:0"');
   for (const b of $('pActions').querySelectorAll('button[data-act]')) b.onclick = () => doAction(b.dataset.act, b.dataset.for);
+  await loadDoc(force, 'Could not load the Ticket.');
+}
+async function loadDoc(force, failure) {
   try {
     const res = await fetch(`/api/ticket?key=${encodeURIComponent(selected)}`);
     const { markdown, path } = await res.json();
@@ -293,8 +362,22 @@ async function refreshPanel(force) {
     lastMd = markdown;
     $('pPath').textContent = path;
     $('pDoc').innerHTML = window.marked && window.DOMPurify ? DOMPurify.sanitize(marked.parse(markdown)) : `<pre>${esc(markdown)}</pre>`;
-  } catch { $('pDoc').textContent = 'Could not load the Ticket.'; }
+  } catch { $('pDoc').textContent = failure; }
 }
+async function refreshMapPanel(f, force) {
+  const ms = f.mapSession;
+  $('pRel').innerHTML = `
+    <div><b>Map</b>${f.tickets.length} Tickets · ${f.hasFog ? 'has Fog' : 'no Fog'}${f.mapAction ? ` · suggests ${esc(MAP_SKILLS[f.mapAction])}` : ''}</div>
+    ${ms ? `<div><b>Session</b>${esc(ms.kind ?? 'Map')} · ${esc(ms.status)}</div>` : ''}`;
+  const hasTerm = board.backend.inBrowser && Boolean(ms);
+  $('pTabs').style.display = board.backend.inBrowser ? '' : 'none';
+  $('pTabs').querySelector('[data-tab="session"]').disabled = !hasTerm;
+  if (tab === 'session' && termKey !== selected && hasTerm) connectTerm(selected);
+  $('pActions').innerHTML = `<span class="actions" style="margin:0">${mapControls(f, false)}</span>`;
+  for (const b of $('pActions').querySelectorAll('button[data-map-act]')) b.onclick = () => doMapAction(b.dataset.mapAct, b.dataset.slug);
+  await loadDoc(force, 'Could not load the Map.');
+}
+
 function closePanel() { disconnectTerm(); showTab('ticket'); selected = null; lastMd = null; $('panel').classList.remove('open'); render(); }
 $('pClose').onclick = closePanel;
 // Escape belongs to the Session when you're typing in its terminal.

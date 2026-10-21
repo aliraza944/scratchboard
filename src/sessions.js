@@ -8,6 +8,11 @@ import { run, commandExists, claudeCommand } from './platform.js';
 import { createTmuxBackend } from './backends/tmux.js';
 
 export const ticketKey = (feature, ticket) => `${feature}/${ticket.name}`;
+// A Map's chart or slice Session runs under the Feature's `<slug>/map` key. Ticket names
+// start with their number, so it can't clash with a Ticket's key.
+// mapTarget is what launch/relaunch take in place of a Ticket for it.
+export const mapTarget = (slug) => ({ name: 'map', windowName: `${slug}-map` });
+export const mapKey = (slug) => ticketKey(slug, mapTarget(slug));
 export const BACKENDS = ['tmux', 'pty'];
 
 // `auto` (the default) means tmux if it's on the PATH, else pty.
@@ -24,7 +29,7 @@ export async function createSessions(repoRoot, requested = 'auto') {
 
   async function startClaude(feature, ticket, cwd, claudeArgs) {
     const claude = await claudeCommand();
-    await backend.start({ key: ticketKey(feature.slug, ticket), name: ticket.name, cwd, command: claude.command, args: [...claude.args, ...claudeArgs] });
+    await backend.start({ key: ticketKey(feature.slug, ticket), name: ticket.windowName ?? ticket.name, cwd, command: claude.command, args: [...claude.args, ...claudeArgs] });
   }
 
   return {
