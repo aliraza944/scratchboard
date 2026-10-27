@@ -4,7 +4,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { claimFile, releaseFile } from './claims.js';
+import { claimFile, releaseFile, replaceAssigneeFile } from './claims.js';
 import { readBoard, nextTicketNumber } from './tickets.js';
 import { renderPrompt } from './prompts.js';
 import { createSessions, ticketKey, mapTarget, mapKey } from './sessions.js';
@@ -26,6 +26,8 @@ const CLAIMED = ['grilling', 'in-progress'];
 const today = () => new Date().toISOString().slice(0, 10);
 const SCAN_MS = 1500;
 const SESSION_RE = /session ([0-9a-f-]{36})/i;
+// A Codex Session's claim says so: `agent (codex grill session <id>, date)`. Claude's claims don't.
+const harnessOf = (assignee) => (/\bcodex\b/i.test(assignee) ? 'codex' : 'claude');
 
 export async function startServer({ repoRoot, port, backend: requestedBackend = 'auto', onListening }) {
   const sessions = await createSessions(repoRoot, requestedBackend);
@@ -36,7 +38,7 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
   let busy = new Set(); // ticket keys with an action in flight
   // Map Sessions claim nothing in a file, so their kind and id live here only, for
   // Relaunch and the end-of-Session notice. They're gone when the board stops.
-  const mapSessions = new Map(); // slug -> { kind, sessionId, ticketsAtLaunch: Set of Ticket names }
+  const mapSessions = new Map(); // slug -> { kind, harness, sessionId, ticketsAtLaunch: Set of Ticket names }
 
   // A Landed Ticket's worktree and branch go once its Session has ended (ADR 0003).
   // Tried once per Ticket per board run, so a refusal (a dirty worktree) isn't retried every scan.
@@ -60,6 +62,7 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         const sessionId = t.assignee.match(SESSION_RE)?.[1] ?? null;
         const win = live.get(t.key);
         t.sessionId = sessionId;
+        t.harness = CLAIMED.includes(t.column) && t.assignee ? harnessOf(t.assignee) : null;
         if (!CLAIMED.includes(t.column)) t.session = win ? (win.alive ? 'running' : 'ended') : null;
         else if (!sessionId) t.session = win ? (win.alive ? 'running' : 'ended') : 'person';
         else t.session = win?.alive ? 'running' : 'ended';
@@ -72,7 +75,7 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
       const win = live.get(f.mapKey);
       const known = mapSessions.get(f.slug);
       f.mapSession = f.mapPath && win
-        ? { status: win.alive ? 'running' : 'ended', kind: known?.kind ?? null, canRelaunch: Boolean(known) }
+        ? { status: win.alive ? 'running' : 'ended', kind: known?.kind ?? null, harness: known?.harness ?? null, canRelaunch: Boolean(known?.sessionId) }
         : null;
       f.mapBusy = busy.has(f.mapKey);
     }
@@ -81,10 +84,11 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
       repoRoot,
       backend: { name: sessions.backend.name, label: sessions.backend.label, inBrowser: Boolean(sessions.backend.inBrowser) },
       nativeNotifications,
+      harnesses: sessions.harnesses,
       features: features.map(({ slug, mapTitle, mapPath, hasFog, mapAction, mapKey, mapSession, mapBusy, tickets }) => ({
         slug, mapTitle, hasMap: Boolean(mapPath), hasFog, mapAction, mapKey, mapSession, mapBusy,
-        tickets: tickets.map(({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, fields, readyForAgent, readyForHuman, needsInfo, held }) =>
-          ({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, readyForAgent, readyForHuman, needsInfo, held, type: fields.type ?? null })),
+        tickets: tickets.map(({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, harness, busy, fields, readyForAgent, readyForHuman, needsInfo, held }) =>
+          ({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, harness, busy, readyForAgent, readyForHuman, needsInfo, held, type: fields.type ?? null })),
       })),
     };
   }
@@ -153,7 +157,7 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
     return findMap(key)?.mapPath ?? findTicket(key)?.ticket.path ?? null;
   }
 
-  function buildMapPrompt(feature, kind) {
+  function buildMapPrompt(feature, kind, harness) {
     const vars = {
       mapPath: feature.mapPath,
       mapTitle: feature.mapTitle ?? feature.slug,
@@ -161,11 +165,11 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
       issuesDir: path.join(feature.dir, 'issues'),
       nextNumber: nextTicketNumber(feature),
     };
-    return (cwd) => renderPrompt(repoRoot, kind, { ...vars, cwd });
+    return (cwd) => renderPrompt(repoRoot, kind, { ...vars, cwd }, harness);
   }
 
   // land: { target, branch }, the branch an implement Session Lands on and the worktree's own.
-  function buildPrompt(feature, ticket, kind, land = {}) {
+  function buildPrompt(feature, ticket, kind, harness, land = {}) {
     return (cwd) => {
       const inWorktree = cwd !== repoRoot;
       const vars = {
@@ -186,7 +190,7 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
           : 'Other Sessions may be working in this same folder on other Tickets. Only touch the files your Ticket needs.',
         landStep: landStep(inWorktree, land),
       };
-      return renderPrompt(repoRoot, kind, vars);
+      return renderPrompt(repoRoot, kind, vars, harness);
     };
   }
 
@@ -206,6 +210,19 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
     ].join('\n');
   }
 
+  // Writes a Launch's claim. A Codex Session's id is only found after it starts (ADR 0004),
+  // so its claim names no id until then, and Relaunch stays unavailable if it never is.
+  function claimLaunch(ticket, result, label, status) {
+    if (result.harness !== 'codex') return claimFile(ticket.path, `agent (${label} ${result.sessionId}, ${today()})`, status);
+    const pending = `agent (codex ${label}, ${today()})`;
+    claimFile(ticket.path, pending, status);
+    result.sessionIdFound.then((id) => {
+      if (id) replaceAssigneeFile(ticket.path, pending, `agent (codex ${label} ${id}, ${today()})`);
+      else console.error(`couldn't find the Codex session for ${ticket.path}: Relaunch won't be available`);
+      refresh();
+    });
+  }
+
   async function act(key, fn) {
     if (busy.has(key)) throw httpError(409, 'Already working on that Ticket or Map');
     busy.add(key);
@@ -215,19 +232,19 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
 
   const actions = {
     // Ready -> Grilling: a /grill-me Session in the main checkout.
-    async grill({ key }) {
+    async grill({ key, harness }) {
       const found = findTicket(key);
       if (!found) throw httpError(404, 'No such Ticket');
       const { feature, ticket } = found;
       if (ticket.column !== 'ready') throw httpError(409, `Ticket is ${ticket.column}, not Ready`);
       return act(key, async () => {
-        const result = await sessions.launch({ feature, ticket, prompt: buildPrompt(feature, ticket, 'grill'), useWorktree: false });
-        claimFile(ticket.path, `agent (grill session ${result.sessionId}, ${today()})`, 'grilling');
-        return { ok: true, ...result };
+        const result = await sessions.launch({ feature, ticket, prompt: buildPrompt(feature, ticket, 'grill', harness), useWorktree: false, harness });
+        claimLaunch(ticket, result, 'grill session', 'grilling');
+        return { ok: true, sessionId: result.sessionId, cwd: result.cwd, harness: result.harness };
       });
     },
     // Ready or Grilling -> In progress: a fresh /implement Session. Ends the grill Session first.
-    async launch({ key }) {
+    async launch({ key, harness }) {
       const found = findTicket(key);
       if (!found) throw httpError(404, 'No such Ticket');
       const { feature, ticket } = found;
@@ -236,9 +253,9 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         if (ticket.column === 'grilling') await sessions.kill(key);
         // Read before the worktree is cut, so it's the branch the worktree starts from.
         const land = { target: await sessions.currentBranch(), branch: await sessions.worktreeBranch(feature, ticket).catch(() => null) };
-        const result = await sessions.launch({ feature, ticket, prompt: buildPrompt(feature, ticket, 'implement', land) });
-        claimFile(ticket.path, `agent (session ${result.sessionId}, ${today()})`, 'in-progress');
-        return { ok: true, ...result };
+        const result = await sessions.launch({ feature, ticket, prompt: buildPrompt(feature, ticket, 'implement', harness, land), harness });
+        claimLaunch(ticket, result, 'session', 'in-progress');
+        return { ok: true, sessionId: result.sessionId, cwd: result.cwd, harness: result.harness };
       });
     },
     async release({ key }) {
@@ -255,27 +272,29 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
       const found = findTicket(key);
       if (!found) throw httpError(404, 'No such Ticket');
       const sessionId = found.ticket.assignee.match(SESSION_RE)?.[1];
-      if (!sessionId) throw httpError(409, 'This Ticket was not claimed by a Session');
+      const harness = harnessOf(found.ticket.assignee);
+      if (!sessionId) throw httpError(409, harness === 'codex' ? "Scratchboard couldn't find this Codex Session's id, so it can't resume it. Release and start a new one" : 'This Ticket was not claimed by a Session');
       return act(key, async () => {
         if ((await sessions.list()).get(key)?.alive) throw httpError(409, 'Session is still running');
         const useWorktree = found.ticket.column !== 'grilling';
-        await sessions.relaunch({ feature: found.feature, ticket: found.ticket, sessionId, useWorktree });
+        await sessions.relaunch({ feature: found.feature, ticket: found.ticket, sessionId, useWorktree, harness });
         return { ok: true };
       });
     },
     // A chart (/wayfinder) or slice (/to-tickets) Session on a Map, in the main checkout.
     // Nothing is claimed in map.md: while the Session runs, no other one can be Launched on the Map.
-    async chart({ slug }) { return launchMap(slug, 'chart'); },
-    async slice({ slug }) { return launchMap(slug, 'slice'); },
+    async chart({ slug, harness }) { return launchMap(slug, 'chart', harness); },
+    async slice({ slug, harness }) { return launchMap(slug, 'slice', harness); },
     async relaunchMap({ slug }) {
       const feature = findFeature(slug);
       if (!feature) throw httpError(404, 'No such Map');
       const known = mapSessions.get(slug);
       if (!known) throw httpError(409, 'No Session to relaunch on this Map (it was closed, or the board restarted). Start a new one instead');
+      if (!known.sessionId) throw httpError(409, "Scratchboard couldn't find this Codex Session's id, so it can't resume it. Start a new one instead");
       const key = mapKey(slug);
       return act(key, async () => {
         if ((await sessions.list()).get(key)?.alive) throw httpError(409, 'Session is still running');
-        await sessions.relaunch({ feature, ticket: mapTarget(slug), sessionId: known.sessionId, useWorktree: false });
+        await sessions.relaunch({ feature, ticket: mapTarget(slug), sessionId: known.sessionId, useWorktree: false, harness: known.harness });
         return { ok: true };
       });
     },
@@ -304,15 +323,17 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
     },
   };
 
-  async function launchMap(slug, kind) {
+  async function launchMap(slug, kind, harness) {
     const feature = findFeature(slug);
     if (!feature) throw httpError(404, 'No such Map');
     const key = mapKey(slug);
     return act(key, async () => {
       if ((await sessions.list()).get(key)?.alive) throw httpError(409, 'A Session is already running on this Map');
-      const result = await sessions.launch({ feature, ticket: mapTarget(slug), prompt: buildMapPrompt(feature, kind), useWorktree: false });
-      mapSessions.set(slug, { kind, sessionId: result.sessionId, ticketsAtLaunch: new Set(feature.tickets.map((t) => t.name)) });
-      return { ok: true, ...result };
+      const result = await sessions.launch({ feature, ticket: mapTarget(slug), prompt: buildMapPrompt(feature, kind, harness), useWorktree: false, harness });
+      const known = { kind, harness: result.harness, sessionId: result.sessionId, ticketsAtLaunch: new Set(feature.tickets.map((t) => t.name)) };
+      mapSessions.set(slug, known);
+      result.sessionIdFound?.then((id) => { known.sessionId = id; refresh(); });
+      return { ok: true, sessionId: result.sessionId, cwd: result.cwd, harness: result.harness };
     });
   }
 

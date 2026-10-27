@@ -84,3 +84,7 @@ _Avoid_: Unclaim, cancel, reset
 **Session**:
 One interactive agent conversation working on exactly one Ticket or exactly one Map. A grill Session interviews you about a Ticket; an implement Session builds a Ticket. A chart Session turns a Map's Fog (or a Map with no Tickets yet) into Decision Tickets; a slice Session turns a Map whose Decision Tickets are all Resolved and whose Fog is gone into Build Tickets.
 _Avoid_: Agent, job, worker
+
+**Harness**:
+The agent CLI a Session runs in: Claude Code (the default) or Codex. You pick it on each Launch, and nothing saves it. A Session stays in the Harness it was Launched in, so Relaunch resumes it there.
+_Avoid_: Agent (the claim's `agent` is whoever holds the Ticket), model, provider

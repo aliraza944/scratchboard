@@ -37,3 +37,15 @@ export function claimFile(file, assignee, status) {
 export function releaseFile(file) {
   fs.writeFileSync(file, releaseText(fs.readFileSync(file, 'utf8')));
 }
+
+// Swaps one Assignee value for another, only while the claim is still `from`: a Codex
+// Session's id is filled in after its Launch, and the Ticket may have been Released since.
+export function replaceAssigneeText(text, from, to) {
+  return text.replace(assigneeRe, (line) => (line.includes(from) ? line.replace(from, to) : line));
+}
+
+export function replaceAssigneeFile(file, from, to) {
+  const text = fs.readFileSync(file, 'utf8');
+  const next = replaceAssigneeText(text, from, to);
+  if (next !== text) fs.writeFileSync(file, next);
+}

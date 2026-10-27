@@ -1,11 +1,11 @@
-/mattpocock-skills:grill-me the Ticket at {{ticketPath}} ({{ticketTitle}})
+{{skill:grill-me}} the Ticket at {{ticketPath}} ({{ticketTitle}})
 
 Scratchboard has put this Ticket in Grilling for you (Status: grilling, Assignee: agent (grill session …)). Don't claim it again, and don't work on any other Ticket.
 
-{{mapStep}} Then grill me about this Ticket until we reach a shared understanding. Don't implement anything: a separate /implement Session will build it later.
+{{mapStep}} Then grill me about this Ticket until we reach a shared understanding. Don't implement anything: a separate implement Session will build it later.
 
 Once I confirm we've reached a shared understanding:
-1. Add an `## Agent Brief` section to the Ticket, at the absolute path above. It is the contract a fresh /implement Session will build from, without this conversation, so it must stand on its own. Use the triage skill's agent-brief shape:
+1. Add an `## Agent Brief` section to the Ticket, at the absolute path above. It is the contract a fresh implement Session will build from, without this conversation, so it must stand on its own. Use the triage skill's agent-brief shape:
    - **Summary:** one line on what needs to happen
    - **Current behavior:** the status quo it builds on
    - **Desired behavior:** what should be true afterwards, including edge cases and error conditions

@@ -1,4 +1,4 @@
-/mattpocock-skills:to-tickets slice the Map at {{mapPath}} ({{mapTitle}}) into Build Tickets
+{{skill:to-tickets}} slice the Map at {{mapPath}} ({{mapTitle}}) into Build Tickets
 
 Scratchboard started this slice Session because every Decision Ticket on this Map is resolved and it has no Fog left.
 

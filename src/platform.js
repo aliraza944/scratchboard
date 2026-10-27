@@ -1,4 +1,4 @@
-// The few things that differ between Linux, macOS and Windows: finding `claude`,
+// The few things that differ between Linux, macOS and Windows: finding `claude` and `codex`,
 // opening a URL, desktop notifications, and where state files live.
 import { execFile as execFileCb, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -31,21 +31,26 @@ export function commandExists(name) {
   return null;
 }
 
-// How to start `claude`: { command, args } to prepend before claude's own arguments.
+// How to start a Harness's CLI (`claude` or `codex`): { command, args } to prepend
+// before its own arguments, or null when it isn't installed.
 // A Windows .cmd shim can't be started directly, so it goes through cmd.exe.
-async function findClaude() {
-  const override = process.env.SCRATCHBOARD_CLAUDE;
-  let file = override || commandExists('claude');
+async function findCommand(name, override) {
+  let file = override || commandExists(name);
   if (!file && !isWindows) {
     // GUI-started shells may lack the user's PATH; ask a login shell.
-    try { file = await run(process.env.SHELL || 'bash', ['-lc', 'command -v claude']); } catch { /* not found */ }
+    try { file = await run(process.env.SHELL || 'bash', ['-lc', `command -v ${name}`]); } catch { /* not found */ }
   }
-  file ||= 'claude';
+  if (!file) return null;
   if (isWindows && /\.(cmd|bat)$/i.test(file)) return { command: process.env.ComSpec || 'cmd.exe', args: ['/d', '/s', '/c', file] };
   return { command: file, args: [] };
 }
-let claudePromise;
-export const claudeCommand = () => (claudePromise ??= findClaude());
+const commandPromises = {};
+// claude falls back to its bare name, so a missing install fails loudly at Launch.
+export const claudeCommand = () => (commandPromises.claude ??= findCommand('claude', process.env.SCRATCHBOARD_CLAUDE).then((c) => c ?? { command: 'claude', args: [] }));
+export const codexCommand = () => (commandPromises.codex ??= findCommand('codex', process.env.SCRATCHBOARD_CODEX));
+
+// Where Codex keeps its config and its session rollouts.
+export const codexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 
 export function openUrl(url) {
   const [cmd, args] = isWindows ? ['cmd', ['/c', 'start', '""', url]] : isMac ? ['open', [url]] : ['xdg-open', [url]];

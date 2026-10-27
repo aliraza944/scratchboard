@@ -1,4 +1,4 @@
-/mattpocock-skills:implement {{ticketPath}}
+{{skill:implement}} {{ticketPath}}
 
 Ticket: {{ticketTitle}}
 

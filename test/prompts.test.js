@@ -33,3 +33,14 @@ test('the implement prompt has a step for Landing', () => {
   assert.match(text, /4\. Land on A\./);
   assert.doesNotMatch(text, /\{\{\w+\}\}/);
 });
+
+test('each prompt calls its skill the way its Harness does', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-'));
+  const skills = { grill: 'grill-me', implement: 'implement', chart: 'wayfinder', slice: 'to-tickets' };
+  for (const [kind, skill] of Object.entries(skills)) {
+    assert.ok(renderPrompt(root, kind, {}).startsWith(`/mattpocock-skills:${skill} `), `${kind} on Claude`);
+    const codex = renderPrompt(root, kind, {}, 'codex');
+    assert.ok(codex.startsWith(`$${skill} `), `${kind} on Codex`);
+    assert.doesNotMatch(codex, /mattpocock-skills|\{\{/);
+  }
+});

@@ -1,4 +1,4 @@
-/mattpocock-skills:wayfinder chart the Map at {{mapPath}} ({{mapTitle}}) into Decision Tickets
+{{skill:wayfinder}} chart the Map at {{mapPath}} ({{mapTitle}}) into Decision Tickets
 
 Scratchboard started this chart Session on an existing Map. Charting steps 1–3 are already done: the Map exists. Don't create a new Map, and don't rewrite its Destination or Notes.
 

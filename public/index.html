@@ -64,6 +64,7 @@ main { padding: 16px 20px 60px; display: grid; gap: 24px; }
 .chip.wait { background: var(--blocked-bg); color: var(--blocked); }
 .chip.run { background: var(--progress-bg); color: var(--progress); }
 .chip.run::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: currentColor; margin-right: 5px; vertical-align: 1px; animation: pulse 1.6s infinite; }
+.chip.codex { background: var(--surface); color: var(--text); border: 1px solid var(--line); }
 .chip.ended, .chip.warn { background: var(--danger-bg); color: var(--danger); }
 @keyframes pulse { 50% { opacity: .35; } }
 .actions { display: flex; gap: 6px; margin-top: 8px; }
@@ -72,6 +73,10 @@ button:hover { border-color: var(--faint); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.quiet { font-size: 11px; padding: 2px 7px; color: var(--muted); }
 button:disabled { opacity: .5; cursor: default; }
+.harness { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.harness button { border: 0; border-radius: 0; padding: 3px 8px; color: var(--muted); background: var(--surface); }
+.harness button + button { border-left: 1px solid var(--line); }
+.harness button.on { background: var(--surface-2); color: var(--text); font-weight: 600; }
 .mini { display: flex; gap: 8px; padding: 4px 6px; font-size: 12px; border-radius: 6px; cursor: pointer; color: var(--muted); }
 .mini:hover { background: var(--surface); color: var(--text); }
 .mini .id { font-family: var(--mono); }
@@ -133,6 +138,11 @@ const COLS = [['blocked', 'Blocked'], ['ready', 'Ready'], ['grilling', 'Grilling
 const CLAIMED = ['grilling', 'in-progress'];
 // Which drags are allowed, and what each one does.
 const MOVES = { 'ready>grilling': 'grill', 'ready>in-progress': 'launch', 'grilling>in-progress': 'launch', 'grilling>ready': 'release', 'in-progress>ready': 'release' };
+// The Harness picked for a Ticket's or Map's next Launch, by key. Never saved: it's
+// Claude unless you flip it, and goes back to Claude once that Launch has started.
+const harnessPick = new Map();
+const harnessFor = (key) => harnessPick.get(key) ?? 'claude';
+const skillCall = (harness, skill) => (harness === 'codex' ? `Codex $${skill}` : `/${skill}`);
 let board = null;
 let selected = null;
 let dragKey = null;
@@ -159,6 +169,20 @@ function setLive(on) { $('live').classList.toggle('on', on); $('live').querySele
 
 function allTickets() { return board ? board.features.flatMap((f) => f.tickets.map((t) => ({ ...t, feature: f.slug }))) : []; }
 function byKey(key) { return allTickets().find((t) => t.key === key); }
+
+function harnessToggle(key) {
+  if (!board.harnesses || board.harnesses.length < 2) return '';
+  const k = esc(key);
+  const b = (h, label) => `<button data-harness="${h}" data-for="${k}" class="${harnessFor(key) === h ? 'on' : ''}" title="Run the next Session in ${label}">${label}</button>`;
+  return `<span class="harness">${b('claude', 'Claude')}${b('codex', 'Codex')}</span>`;
+}
+document.addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-harness]');
+  if (!b) return;
+  if (b.dataset.harness === 'claude') harnessPick.delete(b.dataset.for); else harnessPick.set(b.dataset.for, b.dataset.harness);
+  render();
+  if (selected) refreshPanel(false);
+});
 
 function render() {
   if (!board) return;
@@ -218,18 +242,20 @@ function mapControls(f, withHint) {
   const out = [];
   const ms = f.mapSession;
   const kind = ms?.kind ? `${ms.kind} Session` : 'Map Session';
+  const badge = ms?.harness === 'codex' ? '<span class="chip codex">Codex</span>' : '';
   if (ms?.status === 'running') {
-    out.push(`<span class="chip run">${kind} running</span>`);
+    out.push(`<span class="chip run">${kind} running</span>`, badge);
     out.push(`<button data-map-act="open" data-slug="${s}">Open</button>`, `<button data-map-act="stopMap" data-slug="${s}">Stop</button>`);
     return out.join('');
   }
   if (ms?.status === 'ended') {
-    out.push(`<span class="chip ended">${kind} ended</span>`, `<button data-map-act="open" data-slug="${s}">Open</button>`);
+    out.push(`<span class="chip ended">${kind} ended</span>`, badge, `<button data-map-act="open" data-slug="${s}">Open</button>`);
     if (ms.canRelaunch) out.push(`<button data-map-act="relaunchMap" data-slug="${s}">Relaunch</button>`);
     out.push(`<button data-map-act="stopMap" data-slug="${s}">Close</button>`);
   }
   // The main action first, then the other skill in case the board's guess is wrong.
   const order = f.mapAction === 'slice' ? ['slice', 'chart'] : ['chart', 'slice'];
+  out.push(harnessToggle(f.mapKey));
   for (const k of order) out.push(`<button data-map-act="${k}" data-slug="${s}" class="${k === f.mapAction ? 'primary' : f.mapAction ? 'quiet' : ''}">${MAP_SKILLS[k]}</button>`);
   if (withHint && f.mapAction && !ms) out.push(`<span class="note">${esc(MAP_HINTS[f.mapAction](f))}</span>`);
   return out.join('');
@@ -242,13 +268,15 @@ async function doMapAction(act, slug) {
   if (act === 'stopMap' && f.mapSession?.status === 'running' && !confirm(`Stop the ${f.mapSession.kind ?? 'Map'} Session on ${name}? Its window is closed.`)) return;
   if ((act === 'chart' || act === 'slice') && f.mapAction && act !== f.mapAction && !confirm(`The board suggests ${MAP_SKILLS[f.mapAction]} for ${name}. Start ${MAP_SKILLS[act]} anyway?`)) return;
   try {
-    const body = act === 'open' ? { key: f.mapKey } : { slug };
+    const harness = harnessFor(f.mapKey);
+    const body = act === 'open' ? { key: f.mapKey } : { slug, harness };
     const res = await fetch(`/api/${act}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-scratchboard': '1' }, body: JSON.stringify(body) });
     const out = await res.json();
     if (!res.ok) throw new Error(out.error);
+    if (act === 'chart' || act === 'slice') { harnessPick.delete(f.mapKey); render(); }
     if (!board.nativeNotifications && window.Notification?.permission === 'default') Notification.requestPermission();
     const where = board.backend.label;
-    toast({ chart: `Charting ${name}: /wayfinder starting in ${where}. Press Open to join`, slice: `Slicing ${name}: /to-tickets starting in ${where}. Press Open to join`, relaunchMap: `Relaunched the Session on ${name}`, stopMap: `Closed the Session on ${name}`, open: out.inBrowser ? '' : `Opening ${name}'s Session in a terminal` }[act] || '');
+    toast({ chart: `Charting ${name}: ${skillCall(harness, 'wayfinder')} starting in ${where}. Press Open to join`, slice: `Slicing ${name}: ${skillCall(harness, 'to-tickets')} starting in ${where}. Press Open to join`, relaunchMap: `Relaunched the Session on ${name}`, stopMap: `Closed the Session on ${name}`, open: out.inBrowser ? '' : `Opening ${name}'s Session in a terminal` }[act] || '');
     if (out.inBrowser || ((act === 'chart' || act === 'slice') && board.backend.inBrowser)) { await openPanel(f.mapKey); showTab('session'); }
     if (act === 'relaunchMap' && selected === f.mapKey && tab === 'session') connectTerm(f.mapKey);
   } catch (err) { toast(`Couldn't ${act} ${name}: ${err.message}`); }
@@ -277,6 +305,7 @@ function chips(t) {
   else if (t.readyForAgent && t.column === 'ready') out.push('<span class="chip ready">ready for agent</span>');
   else if (t.column === 'ready') out.push('<span class="chip ready">ready</span>');
   if (t.held) out.push(`<span class="chip warn" title="${esc(t.held)}">can't land: ${esc(t.held)}</span>`);
+  if (t.harness === 'codex') out.push('<span class="chip codex">Codex</span>');
   if (t.busy) out.push('<span class="chip">working…</span>');
   // A grill Session that has written ready-for-agent is done, just still open at its prompt.
   else if (t.session === 'running') out.push(`<span class="chip run">${t.column !== 'grilling' ? 'Session running' : t.readyForAgent ? 'grill Session still open' : 'grill Session running'}</span>`);
@@ -289,9 +318,14 @@ function chips(t) {
 function actionsFor(t) {
   if (t.busy) return '';
   const k = esc(t.key);
+  // Ready and Grilling Tickets can still be Launched (by drag): pick the Harness for that here.
+  const toggle = ['ready', 'grilling'].includes(t.column) ? harnessToggle(t.key) : '';
   // A resolved Ticket's Session window may still be open: let it be reached.
-  if (!CLAIMED.includes(t.column)) return t.session === 'running' || t.session === 'ended' ? `<div class="actions"><button data-act="open" data-for="${k}">Open Session</button></div>` : '';
-  const btns = [];
+  if (!CLAIMED.includes(t.column)) {
+    const btns = [toggle, t.session === 'running' || t.session === 'ended' ? `<button data-act="open" data-for="${k}">Open Session</button>` : ''].join('');
+    return btns ? `<div class="actions">${btns}</div>` : '';
+  }
+  const btns = [toggle];
   if (t.session === 'running' || t.session === 'ended') btns.push(`<button data-act="open" data-for="${k}">Open</button>`);
   if (t.session === 'ended' && t.sessionId) btns.push(`<button data-act="relaunch" data-for="${k}">Relaunch</button>`);
   btns.push(`<button data-act="release" data-for="${k}">Release</button>`);
@@ -322,12 +356,15 @@ async function doAction(act, key) {
     if (!confirm(msg)) return;
   }
   try {
-    const res = await fetch(`/api/${act}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-scratchboard': '1' }, body: JSON.stringify({ key }) });
+    const harness = harnessFor(key);
+    const launching = act === 'grill' || act === 'launch';
+    const res = await fetch(`/api/${act}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-scratchboard': '1' }, body: JSON.stringify(launching ? { key, harness } : { key }) });
     const body = await res.json();
     if (!res.ok) throw new Error(body.error);
+    if (launching) { harnessPick.delete(key); render(); }
     if (!board.nativeNotifications && window.Notification?.permission === 'default') Notification.requestPermission();
     const where = board.backend.label;
-    toast({ grill: `Grilling ${t.id}: /grill-me starting in ${where}. Press Open to join`, launch: `Building ${t.id}: /implement starting in ${where}`, release: `Released ${t.id}`, relaunch: `Relaunched ${t.id}`, open: body.inBrowser ? '' : `Opening ${t.id} in a terminal` }[act] || '');
+    toast({ grill: `Grilling ${t.id}: ${skillCall(harness, 'grill-me')} starting in ${where}. Press Open to join`, launch: `Building ${t.id}: ${skillCall(harness, 'implement')} starting in ${where}`, release: `Released ${t.id}`, relaunch: `Relaunched ${t.id}`, open: body.inBrowser ? '' : `Opening ${t.id} in a terminal` }[act] || '');
     if (act === 'open' && body.inBrowser) { await openPanel(key); showTab('session'); }
     if (act === 'relaunch' && selected === key && tab === 'session') connectTerm(key);
   } catch (err) { toast(`Couldn't ${act} ${t?.id ?? ''}: ${err.message}`); }

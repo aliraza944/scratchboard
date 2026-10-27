@@ -1,10 +1,12 @@
 // Starts, finds and ends Sessions. The terminal side is a backend: tmux whenever
 // it's installed, otherwise Scratchboard's own pty terminal (see src/backends/).
-// This layer adds what every backend shares: worktrees and the `claude` command.
+// This layer adds what every backend shares: worktrees and the Harness's command
+// (`claude`, or `codex` when it's installed and picked at Launch).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { run, commandExists, claudeCommand } from './platform.js';
+import { run, commandExists, claudeCommand, codexCommand } from './platform.js';
+import { discoverCodexSession } from './codex.js';
 import { createTmuxBackend } from './backends/tmux.js';
 
 export const ticketKey = (feature, ticket) => `${feature}/${ticket.name}`;
@@ -14,6 +16,7 @@ export const ticketKey = (feature, ticket) => `${feature}/${ticket.name}`;
 export const mapTarget = (slug) => ({ name: 'map', windowName: `${slug}-map` });
 export const mapKey = (slug) => ticketKey(slug, mapTarget(slug));
 export const BACKENDS = ['tmux', 'pty'];
+export const HARNESSES = ['claude', 'codex'];
 
 // `auto` (the default) means tmux if it's on the PATH, else pty.
 export async function createSessions(repoRoot, requested = 'auto') {
@@ -27,25 +30,47 @@ export async function createSessions(repoRoot, requested = 'auto') {
     return useWorktree && (await isGitRepo(repoRoot)) ? ensureWorktree(repoRoot, feature.slug, ticket) : repoRoot;
   }
 
-  async function startClaude(feature, ticket, cwd, claudeArgs) {
-    const claude = await claudeCommand();
-    await backend.start({ key: ticketKey(feature.slug, ticket), name: ticket.windowName ?? ticket.name, cwd, command: claude.command, args: [...claude.args, ...claudeArgs] });
+  const codex = await codexCommand();
+  const harnesses = codex ? HARNESSES : ['claude'];
+
+  async function start(feature, ticket, cwd, harness, harnessArgs) {
+    const cli = harness === 'codex' ? codex : await claudeCommand();
+    await backend.start({ key: ticketKey(feature.slug, ticket), name: ticket.windowName ?? ticket.name, cwd, command: cli.command, args: [...cli.args, ...harnessArgs] });
   }
+
+  function checkHarness(harness) {
+    if (!harnesses.includes(harness)) throw new Error(harness === 'codex' ? 'codex is not installed (or set SCRATCHBOARD_CODEX)' : `Unknown harness "${harness}"`);
+  }
+
+  // A worktree Session edits the Ticket and Lands in the main checkout, outside Codex's workspace.
+  const codexDirs = (cwd) => (cwd !== repoRoot ? ['--add-dir', repoRoot] : []);
 
   return {
     backend,
+    harnesses,
     list: () => backend.list(),
     // Grill Sessions only talk, so they run in the main checkout; implement Sessions get a worktree.
-    async launch({ feature, ticket, prompt, useWorktree = true }) {
+    // A Codex Session's id isn't known yet: it comes later, from sessionIdFound (null if it never is).
+    async launch({ feature, ticket, prompt, useWorktree = true, harness = 'claude' }) {
+      checkHarness(harness);
       const cwd = await cwdFor(feature, ticket, useWorktree);
+      const text = prompt(cwd);
+      if (harness === 'codex') {
+        const since = Date.now();
+        await start(feature, ticket, cwd, harness, [...codexDirs(cwd), text]);
+        const key = ticketKey(feature.slug, ticket);
+        const sessionIdFound = discoverCodexSession({ cwd, since, prompt: text, isAlive: async () => Boolean((await backend.list()).get(key)?.alive) });
+        return { sessionId: null, sessionIdFound, cwd, harness };
+      }
       const sessionId = crypto.randomUUID();
-      await startClaude(feature, ticket, cwd, ['--session-id', sessionId, prompt(cwd)]);
-      return { sessionId, cwd };
+      await start(feature, ticket, cwd, harness, ['--session-id', sessionId, text]);
+      return { sessionId, cwd, harness };
     },
-    // Restarts an ended Session, resuming the same conversation.
-    async relaunch({ feature, ticket, sessionId, useWorktree = true }) {
+    // Restarts an ended Session, resuming the same conversation in the Harness that started it.
+    async relaunch({ feature, ticket, sessionId, useWorktree = true, harness = 'claude' }) {
+      checkHarness(harness);
       const cwd = await cwdFor(feature, ticket, useWorktree);
-      await startClaude(feature, ticket, cwd, ['--resume', sessionId]);
+      await start(feature, ticket, cwd, harness, harness === 'codex' ? ['resume', ...codexDirs(cwd), sessionId] : ['--resume', sessionId]);
     },
     // The branch the main checkout has checked out, which an implement Session Lands on. Null when detached.
     async currentBranch() {
