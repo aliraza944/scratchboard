@@ -148,6 +148,11 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
     return readBoard(repoRoot).find((f) => f.mapPath && mapKey(f.slug) === key) ?? null;
   }
 
+  // The file the panel shows for a key: a Map's map.md or a Ticket's file. Saves only ever go here.
+  function docPath(key) {
+    return findMap(key)?.mapPath ?? findTicket(key)?.ticket.path ?? null;
+  }
+
   function buildMapPrompt(feature, kind) {
     const vars = {
       mapPath: feature.mapPath,
@@ -282,6 +287,17 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         return { ok: true };
       });
     },
+    // Saves the panel's edit. base is the text the edit started from: if a Session has
+    // written the file since, refuse rather than overwrite its changes.
+    async saveDoc({ key, markdown, base }) {
+      const file = docPath(key);
+      if (!file) throw httpError(404, 'No such Ticket');
+      if (typeof markdown !== 'string') throw httpError(400, 'No markdown to save');
+      if (fs.readFileSync(file, 'utf8') !== base) throw httpError(409, 'The file changed while you were editing. Copy your text, cancel, and edit again');
+      fs.writeFileSync(file, markdown);
+      refresh();
+      return { ok: true };
+    },
     async open({ key }) {
       try { return { ok: true, ...(await sessions.open(key)) }; }
       catch (err) { throw httpError(404, err.message); }
@@ -328,12 +344,9 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         return;
       }
       if (req.method === 'GET' && url.pathname === '/api/ticket') {
-        const key = url.searchParams.get('key') ?? '';
-        const map = findMap(key);
-        if (map) return send(res, 200, { markdown: fs.readFileSync(map.mapPath, 'utf8'), path: map.mapPath });
-        const found = findTicket(key);
-        if (!found) return send(res, 404, { error: 'No such Ticket' });
-        return send(res, 200, { markdown: fs.readFileSync(found.ticket.path, 'utf8'), path: found.ticket.path });
+        const file = docPath(url.searchParams.get('key') ?? '');
+        if (!file) return send(res, 404, { error: 'No such Ticket' });
+        return send(res, 200, { markdown: fs.readFileSync(file, 'utf8'), path: file, relPath: path.relative(repoRoot, file) });
       }
       if (req.method === 'POST' && url.pathname.startsWith('/api/')) {
         if (req.headers['x-scratchboard'] !== '1') return send(res, 403, { error: 'Missing header' });

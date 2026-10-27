@@ -97,6 +97,11 @@ aside .doc { padding: 4px 20px 40px; overflow: auto; flex: 1; }
 .doc code { font-family: var(--mono); font-size: 12px; background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
 .doc pre { background: var(--surface-2); padding: 10px; border-radius: 6px; overflow: auto; }
 .doc a { color: var(--accent); }
+aside .editor { flex: 1; min-height: 0; display: none; flex-direction: column; }
+aside .editor.on { display: flex; }
+aside .editor textarea { flex: 1; resize: none; border: 0; padding: 14px 20px; background: var(--surface); color: var(--text); font: 12.5px/1.55 var(--mono); outline: none; tab-size: 2; }
+aside .editor .edit-bar { display: flex; gap: 8px; align-items: center; justify-content: flex-end; padding: 10px 16px; border-top: 1px solid var(--line); }
+aside .editor .hint { flex: 1; font-size: 11px; color: var(--muted); }
 #toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20; }
 #toast.show { opacity: 1; }
 .empty { color: var(--muted); padding: 40px; text-align: center; }
@@ -115,10 +120,11 @@ aside .doc { padding: 4px 20px 40px; overflow: auto; flex: 1; }
 </header>
 <main id="board"><div class="empty">Loading…</div></main>
 <aside id="panel">
-  <div class="bar"><span class="path" id="pPath"></span><span id="pActions"></span><button id="pClose" title="Close">✕</button></div>
+  <div class="bar"><span class="path" id="pPath"></span><button class="quiet" id="pCopy" title="Copy the path relative to the repo">Copy path</button><button class="quiet" id="pEdit" title="Edit the markdown">Edit</button><span id="pActions"></span><button id="pClose" title="Close">✕</button></div>
   <div class="tabs" id="pTabs"><button data-tab="ticket" class="on">Ticket</button><button data-tab="session">Session</button></div>
   <div class="rel" id="pRel"></div>
   <div class="doc" id="pDoc"></div>
+  <div class="editor" id="pEditor"><textarea id="pText" spellcheck="false"></textarea><div class="edit-bar"><span class="hint">Ctrl+S to save</span><button id="pCancel">Cancel</button><button class="primary" id="pSave">Save</button></div></div>
   <div class="term" id="pTerm"></div>
 </aside>
 <div id="toast"></div>
@@ -331,7 +337,7 @@ let toastTimer;
 function toast(msg) { if (!msg) return; const el = $('toast'); el.textContent = msg; el.classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => el.classList.remove('show'), 3500); }
 
 async function openPanel(key) {
-  if (key !== selected) { disconnectTerm(); showTab('ticket'); }
+  if (key !== selected) { if (!confirmDiscard()) return; stopEdit(); disconnectTerm(); showTab('ticket'); }
   selected = key; render(); $('panel').classList.add('open'); await refreshPanel(true);
 }
 let lastMd = null;
@@ -360,10 +366,11 @@ async function refreshPanel(force) {
 async function loadDoc(force, failure) {
   try {
     const res = await fetch(`/api/ticket?key=${encodeURIComponent(selected)}`);
-    const { markdown, path } = await res.json();
+    const { markdown, path, relPath } = await res.json();
     if (!force && markdown === lastMd) return;
     lastMd = markdown;
-    $('pPath').textContent = path;
+    $('pPath').textContent = relPath;
+    $('pPath').title = path;
     $('pDoc').innerHTML = window.marked && window.DOMPurify ? DOMPurify.sanitize(marked.parse(markdown)) : `<pre>${esc(markdown)}</pre>`;
   } catch { $('pDoc').textContent = failure; }
 }
@@ -381,10 +388,55 @@ async function refreshMapPanel(f, force) {
   await loadDoc(force, 'Could not load the Map.');
 }
 
-function closePanel() { disconnectTerm(); showTab('ticket'); selected = null; lastMd = null; $('panel').classList.remove('open'); render(); }
+// --- Copy path and edit ---
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const ta = Object.assign(document.createElement('textarea'), { value: text });
+    document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove();
+  }
+}
+$('pCopy').onclick = async () => { await copyText($('pPath').textContent); toast(`Copied ${$('pPath').textContent}`); };
+
+// editBase is the text the edit started from; the board leaves the panel alone while it's set.
+let editBase = null;
+function startEdit() {
+  if (lastMd == null) return;
+  editBase = lastMd;
+  $('pText').value = lastMd;
+  setEditing(true);
+  $('pText').focus();
+}
+function stopEdit() { editBase = null; setEditing(false); }
+function setEditing(on) {
+  $('pEditor').classList.toggle('on', on);
+  $('pDoc').style.display = on ? 'none' : '';
+  $('pEdit').disabled = on;
+  $('pTabs').querySelector('[data-tab="session"]').style.visibility = on ? 'hidden' : '';
+}
+async function saveEdit() {
+  if (editBase == null) return;
+  try {
+    const res = await fetch('/api/saveDoc', { method: 'POST', headers: { 'content-type': 'application/json', 'x-scratchboard': '1' }, body: JSON.stringify({ key: selected, markdown: $('pText').value, base: editBase }) });
+    const body = await res.json();
+    if (!res.ok) throw new Error(body.error);
+    stopEdit();
+    await loadDoc(true, 'Could not load the Ticket.');
+    toast('Saved');
+  } catch (err) { toast(`Couldn't save: ${err.message}`); }
+}
+function confirmDiscard() { return editBase == null || $('pText').value === editBase || confirm('Discard your unsaved edits?'); }
+$('pEdit').onclick = startEdit;
+$('pSave').onclick = saveEdit;
+$('pCancel').onclick = () => { if (confirmDiscard()) stopEdit(); };
+$('pText').addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); saveEdit(); }
+});
+
+function closePanel() { if (!confirmDiscard()) return; stopEdit(); disconnectTerm(); showTab('ticket'); selected = null; lastMd = null; $('panel').classList.remove('open'); render(); }
 $('pClose').onclick = closePanel;
-// Escape belongs to the Session when you're typing in its terminal.
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.target.closest('#pTerm')) closePanel(); });
+// Escape belongs to the Session when you're typing in its terminal, and to the editor so it can't drop an edit.
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !e.target.closest('#pTerm') && !e.target.closest('#pEditor')) closePanel(); });
 
 // --- Session terminal (pty backend) ---
 let tab = 'ticket';
