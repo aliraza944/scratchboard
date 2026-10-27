@@ -186,3 +186,15 @@ test('nextTicketNumber continues after the highest numbered Ticket', () => {
   const next = Object.fromEntries(readBoard(root).map((f) => [f.slug, nextTicketNumber(f)]));
   assert.deepEqual(next, { none: '01', some: '06' });
 });
+
+test('parseTicketText reads the Landing and Landed lines an implement Session writes', () => {
+  const held = parseTicketText('# T\n\nStatus: in-progress\nLanding: held (main checkout is on hotfix, not A)\n');
+  assert.equal(held.fields.landing, 'held (main checkout is on hotfix, not A)');
+  assert.equal(parseTicketText('# T\n\nStatus: resolved\nLanded: 1a2b3c4 on A\n').fields.landed, '1a2b3c4 on A');
+});
+
+test('claiming or releasing drops a stale Landing line', () => {
+  const held = '# T\n\nStatus: in-progress\nLanding: held (conflict)\nAssignee: agent (session x)\n';
+  assert.doesNotMatch(claimText(held, 'agent (session y)'), /Landing/);
+  assert.equal(releaseText(held), '# T\n\nStatus: open\n');
+});

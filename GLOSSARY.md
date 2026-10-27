@@ -56,8 +56,12 @@ A Ticket being built, by an implement Session or by a person.
 _Avoid_: Claimed, assigned, active
 
 **Resolved**:
-A Ticket whose answer or work has been written and accepted.
+A Ticket whose answer has been written, or, for a Build Ticket, whose work has Landed.
 _Avoid_: Done, closed
+
+**Held**:
+An In-progress Ticket whose implement Session has finished building but can't Land yet, and says why. It stays In progress until the Session retries.
+_Avoid_: Stuck, failed, blocked (Blocked is about Blockers)
 
 ### Sessions
 
@@ -68,6 +72,10 @@ _Avoid_: Spec, summary, notes
 **Launch**:
 Starting a Session. On a Ticket it also claims the Ticket: a grill Session when it moves to Grilling, an implement Session when it moves to In progress. On a Map nothing is claimed; while its chart or slice Session is running, no other Session can be Launched on that Map.
 _Avoid_: Start, run, dispatch
+
+**Land**:
+Putting a Build Ticket's work onto the branch it was started from, as a straight continuation of that branch's history. An implement Session Lands its own work before it Resolves the Ticket.
+_Avoid_: Merge, integrate, ship
 
 **Release**:
 Clearing a Grilling or In-progress Ticket's claim so that it is open again.

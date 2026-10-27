@@ -38,6 +38,19 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
   // Relaunch and the end-of-Session notice. They're gone when the board stops.
   const mapSessions = new Map(); // slug -> { kind, sessionId, ticketsAtLaunch: Set of Ticket names }
 
+  // A Landed Ticket's worktree and branch go once its Session has ended (ADR 0003).
+  // Tried once per Ticket per board run, so a refusal (a dirty worktree) isn't retried every scan.
+  const cleaned = new Set();
+  function cleanUp(feature, ticket) {
+    if (cleaned.has(ticket.key)) return;
+    cleaned.add(ticket.key);
+    (async () => {
+      if (!(await sessions.hasWorktree(feature, ticket))) return;
+      if (ticket.session === 'ended') await sessions.kill(ticket.key);
+      await sessions.removeWorktree(feature, ticket);
+    })().catch((err) => console.error(`cleanup of ${ticket.key} failed:`, err.message));
+  }
+
   async function scan() {
     const features = readBoard(repoRoot);
     const live = await sessions.list();
@@ -51,6 +64,9 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         else if (!sessionId) t.session = win ? (win.alive ? 'running' : 'ended') : 'person';
         else t.session = win?.alive ? 'running' : 'ended';
         t.busy = busy.has(t.key);
+        const landing = t.fields.landing?.match(/^held\b\s*\(?(.*?)\)?\s*$/i);
+        t.held = t.column === 'in-progress' && landing ? landing[1] || 'no reason given' : null;
+        if (t.column === 'resolved' && t.fields.landed && t.session !== 'running') cleanUp(f, t);
       }
       f.mapKey = mapKey(f.slug);
       const win = live.get(f.mapKey);
@@ -67,8 +83,8 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
       nativeNotifications,
       features: features.map(({ slug, mapTitle, mapPath, hasFog, mapAction, mapKey, mapSession, mapBusy, tickets }) => ({
         slug, mapTitle, hasMap: Boolean(mapPath), hasFog, mapAction, mapKey, mapSession, mapBusy,
-        tickets: tickets.map(({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, fields, readyForAgent, readyForHuman, needsInfo }) =>
-          ({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, readyForAgent, readyForHuman, needsInfo, type: fields.type ?? null })),
+        tickets: tickets.map(({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, fields, readyForAgent, readyForHuman, needsInfo, held }) =>
+          ({ key, id, name, title, kind, column, state, statusRaw, assignee, warnings, waitingOn, blockerIds, blocks, session, sessionId, busy, readyForAgent, readyForHuman, needsInfo, held, type: fields.type ?? null })),
       })),
     };
   }
@@ -91,6 +107,7 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         if (t.column === 'resolved' && o.column !== 'resolved') notify('Ticket resolved', label);
         else if (t.column === 'ready' && o.column === 'blocked') notify('Ticket is Ready', label);
         else if (t.column === 'grilling' && t.readyForAgent && !o.readyForAgent) notify('Grilling done', `${label} is ready for agent`);
+        else if (t.held && !o.held) notify("Can't land", `${label}: ${t.held}`);
         if (o.session === 'running' && t.session === 'ended' && t.column !== 'resolved') notify('Session ended', `${label} isn't resolved yet`);
       }
       // New Tickets bring their own notices; a Map Session that wrote none is worth one.
@@ -142,7 +159,8 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
     return (cwd) => renderPrompt(repoRoot, kind, { ...vars, cwd });
   }
 
-  function buildPrompt(feature, ticket, kind) {
+  // land: { target, branch }, the branch an implement Session Lands on and the worktree's own.
+  function buildPrompt(feature, ticket, kind, land = {}) {
     return (cwd) => {
       const inWorktree = cwd !== repoRoot;
       const vars = {
@@ -161,9 +179,26 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
         worktreeStep: inWorktree
           ? `You are in a git worktree (${cwd}) on your own branch, so write code here. Always edit the Ticket and the map at the absolute paths above, in the main checkout, never the worktree's copies.`
           : 'Other Sessions may be working in this same folder on other Tickets. Only touch the files your Ticket needs.',
+        landStep: landStep(inWorktree, land),
       };
       return renderPrompt(repoRoot, kind, vars);
     };
+  }
+
+  // See ADR 0003: the Session Lands by rebase and fast-forward, and Holds rather than touch your work.
+  function landStep(inWorktree, { target, branch }) {
+    if (!inWorktree) return "There's nothing to Land: your work is already in the main checkout.";
+    if (!target) return `The main checkout was on a detached HEAD when you started, so there's no branch to Land on. Leave your work committed on \`${branch}\` and say so in the Answer.`;
+    const main = JSON.stringify(repoRoot);
+    return [
+      `Before you resolve, Land your work on \`${target}\`, the branch the main checkout (${repoRoot}) had checked out when you started:`,
+      `   - commit everything on your branch \`${branch}\` (never commit \`.scratch\`),`,
+      `   - rebase it onto \`${target}\` here in the worktree, fix any conflicts and re-run the tests,`,
+      `   - check the main checkout is still on \`${target}\` (\`git -C ${main} symbolic-ref --short HEAD\`), then run \`git -C ${main} merge --ff-only ${branch}\`. If that's refused because \`${target}\` has moved on, rebase again and retry,`,
+      '   - never stash, reset, commit, check out or force anything in the main checkout: I may be working there,',
+      `   - if you can't Land (the main checkout is on another branch, the fast-forward would overwrite my uncommitted edits, or a conflict or failing test you can't fix), write \`Landing: held (<one-line reason>)\` on the line under the Ticket's Status line, tell me why, and stop until I ask you to retry,`,
+      `   - once it has Landed, replace any Landing line with \`Landed: <short sha> on ${target}\`.`,
+    ].join('\n');
   }
 
   async function act(key, fn) {
@@ -194,7 +229,9 @@ export async function startServer({ repoRoot, port, backend: requestedBackend = 
       if (!['ready', 'grilling'].includes(ticket.column)) throw httpError(409, `Ticket is ${ticket.column}, not Ready or Grilling`);
       return act(key, async () => {
         if (ticket.column === 'grilling') await sessions.kill(key);
-        const result = await sessions.launch({ feature, ticket, prompt: buildPrompt(feature, ticket, 'implement') });
+        // Read before the worktree is cut, so it's the branch the worktree starts from.
+        const land = { target: await sessions.currentBranch(), branch: await sessions.worktreeBranch(feature, ticket).catch(() => null) };
+        const result = await sessions.launch({ feature, ticket, prompt: buildPrompt(feature, ticket, 'implement', land) });
         claimFile(ticket.path, `agent (session ${result.sessionId}, ${today()})`, 'in-progress');
         return { ok: true, ...result };
       });

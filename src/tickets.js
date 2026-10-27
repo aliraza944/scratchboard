@@ -10,7 +10,8 @@ const GRILLING = ['grilling', 'in grilling'];
 const IN_PROGRESS = ['in-progress', 'in progress', 'claimed', 'wip', 'doing'];
 const RESOLVED = ['resolved', 'closed', 'done', 'completed', 'complete', 'wontfix', 'out of scope', 'out-of-scope', 'not needed', 'skipped'];
 
-const HEADER_KEYS = { type: 'type', status: 'status', assignee: 'assignee', 'blocked by': 'blockedBy', labels: 'labels' };
+// Landing and Landed are written by an implement Session when it Holds or Lands (ADR 0003).
+const HEADER_KEYS = { type: 'type', status: 'status', assignee: 'assignee', 'blocked by': 'blockedBy', labels: 'labels', landing: 'landing', landed: 'landed' };
 
 // `Key: value` or `**Key:** value` (to-tickets writes the bold form).
 const HEADER_RE = /^\s*(?:\*\*)?([A-Za-z][A-Za-z ]*?)(?::\*\*|\*\*:|:)\s*(.*)$/;

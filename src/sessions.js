@@ -47,6 +47,21 @@ export async function createSessions(repoRoot, requested = 'auto') {
       const cwd = await cwdFor(feature, ticket, useWorktree);
       await startClaude(feature, ticket, cwd, ['--resume', sessionId]);
     },
+    // The branch the main checkout has checked out, which an implement Session Lands on. Null when detached.
+    async currentBranch() {
+      try { return await run('git', ['-C', repoRoot, 'symbolic-ref', '--quiet', '--short', 'HEAD']); } catch { return null; }
+    },
+    worktreeBranch: async (feature, ticket) => (await worktreeFor(repoRoot, feature.slug, ticket)).branch,
+    // After a Ticket has Landed: removes its worktree, then its branch if it's on the main checkout's branch.
+    // Both refuse rather than lose anything (a dirty worktree, an unlanded branch).
+    async removeWorktree(feature, ticket) {
+      const { top, dir, branch } = await worktreeFor(repoRoot, feature.slug, ticket);
+      if (fs.existsSync(dir)) await run('git', ['-C', top, 'worktree', 'remove', dir]);
+      await run('git', ['-C', top, 'branch', '-d', branch]).catch(() => {});
+    },
+    async hasWorktree(feature, ticket) {
+      try { return fs.existsSync((await worktreeFor(repoRoot, feature.slug, ticket)).dir); } catch { return false; }
+    },
     kill: (key) => backend.kill(key),
     open: (key) => backend.open(key),
   };
@@ -57,11 +72,14 @@ async function isGitRepo(repoRoot) {
 }
 
 // A worktree per Ticket, beside the repo: ../<repo>-worktrees/<feature>-<ticket>.
-async function ensureWorktree(repoRoot, feature, ticket) {
+async function worktreeFor(repoRoot, feature, ticket) {
   const top = path.resolve(await run('git', ['-C', repoRoot, 'rev-parse', '--show-toplevel']));
-  const dir = path.join(path.dirname(top), `${path.basename(top)}-worktrees`, `${feature}-${ticket.name}`);
+  return { top, dir: path.join(path.dirname(top), `${path.basename(top)}-worktrees`, `${feature}-${ticket.name}`), branch: `sb/${feature}/${ticket.name}` };
+}
+
+async function ensureWorktree(repoRoot, feature, ticket) {
+  const { top, dir, branch } = await worktreeFor(repoRoot, feature, ticket);
   if (fs.existsSync(dir)) return dir;
-  const branch = `sb/${feature}/${ticket.name}`;
   let branchExists = true;
   try { await run('git', ['-C', top, 'rev-parse', '--verify', '--quiet', `refs/heads/${branch}`]); } catch { branchExists = false; }
   fs.mkdirSync(path.dirname(dir), { recursive: true });

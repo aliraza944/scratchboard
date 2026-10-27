@@ -26,3 +26,10 @@ test('a repo prompt in .scratch replaces the default', () => {
   fs.writeFileSync(path.join(root, '.scratch', 'scratchboard-prompt-chart.md'), 'Chart {{mapTitle}}.');
   assert.equal(renderPrompt(root, 'chart', { mapTitle: 'Billing' }), 'Chart Billing.');
 });
+
+test('the implement prompt has a step for Landing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sb-'));
+  const text = renderPrompt(root, 'implement', { ticketPath: 't.md', landStep: 'Land on A.' });
+  assert.match(text, /4\. Land on A\./);
+  assert.doesNotMatch(text, /\{\{\w+\}\}/);
+});

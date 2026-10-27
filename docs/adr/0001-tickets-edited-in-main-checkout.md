@@ -4,7 +4,7 @@ In a git repo, a launched Session writes its code in its own worktree and branch
 
 ## Consequences
 
-- Resolved means "the Session says it's done", not "merged". If you throw a branch away, you reopen its Ticket by hand.
+- ~~Resolved means "the Session says it's done", not "merged".~~ Superseded by [ADR 0003](0003-sessions-land-their-own-work.md): an implement Session Lands its branch before it Resolves the Ticket.
 - The main checkout picks up uncommitted `.scratch` changes while Sessions run.
 
 ## Considered Options

@@ -4,11 +4,13 @@ import fs from 'node:fs';
 
 const statusRe = /^(\s*(?:\*\*)?status(?::\*\*|\*\*:|:)\s*)(.*)$/im;
 const assigneeRe = /^\s*(?:\*\*)?assignee(?::\*\*|\*\*:|:).*(?:\r?\n)?/im;
+// A Held note belongs to the claim it was written under (ADR 0003).
+const landingRe = /^\s*(?:\*\*)?landing(?::\*\*|\*\*:|:).*(?:\r?\n)?/im;
 
 export function claimText(text, assignee, status = 'in-progress') {
   const bold = /^\s*\*\*status:\*\*/im.test(text);
   const assigneeLine = bold ? `**Assignee:** ${assignee}` : `Assignee: ${assignee}`;
-  let out = text.replace(assigneeRe, '');
+  let out = text.replace(assigneeRe, '').replace(landingRe, '');
   if (statusRe.test(out)) {
     out = out.replace(statusRe, (_, head) => `${head}${status}\n${assigneeLine}`);
   } else {
@@ -24,6 +26,7 @@ export function releaseText(text) {
   const bold = /^\s*\*\*status:\*\*/im.test(text);
   return text
     .replace(assigneeRe, '')
+    .replace(landingRe, '')
     .replace(statusRe, (_, head, cur) => `${head}${bold || /^ready[- ]for[- ]agent/i.test(cur.trim()) ? 'ready-for-agent' : 'open'}`);
 }
 
