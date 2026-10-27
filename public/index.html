@@ -270,8 +270,10 @@ function chips(t) {
   if (t.readyForAgent && t.column === 'grilling') out.push('<span class="chip ready">grilled · ready for agent</span>');
   else if (t.readyForAgent && t.column === 'ready') out.push('<span class="chip ready">ready for agent</span>');
   else if (t.column === 'ready') out.push('<span class="chip ready">ready</span>');
+  if (t.held) out.push(`<span class="chip warn" title="${esc(t.held)}">can't land: ${esc(t.held)}</span>`);
   if (t.busy) out.push('<span class="chip">working…</span>');
-  else if (t.session === 'running') out.push(`<span class="chip run">${t.column === 'grilling' ? 'grill Session running' : 'Session running'}</span>`);
+  // A grill Session that has written ready-for-agent is done, just still open at its prompt.
+  else if (t.session === 'running') out.push(`<span class="chip run">${t.column !== 'grilling' ? 'Session running' : t.readyForAgent ? 'grill Session still open' : 'grill Session running'}</span>`);
   else if (t.session === 'ended' && CLAIMED.includes(t.column)) out.push('<span class="chip ended">Session ended</span>');
   else if (t.session === 'person') out.push(`<span class="chip">claimed: ${esc(t.assignee)}</span>`);
   for (const w of t.warnings) out.push(`<span class="chip warn" title="${esc(w)}">⚠ ${esc(w)}</span>`);
@@ -300,11 +302,12 @@ function onDrop(col) { const act = moveFor(col); if (act) doAction(act, dragKey)
 
 async function doAction(act, key) {
   const t = byKey(key);
-  if (act === 'launch' && t.column === 'grilling') {
-    const msg = (t.readyForAgent ? '' : `${t.id} isn't marked ready-for-agent yet, so the grill Session may not have written its Agent Brief.\n\n`)
+  // Once grilled, closing the idle grill Session is the expected next step: only ask when it isn't done.
+  if (act === 'launch' && t.column === 'grilling' && !t.readyForAgent) {
+    const msg = `${t.id} isn't marked ready-for-agent yet, so the grill Session may not have written its Agent Brief.\n\n`
       + (t.session === 'running' ? 'Its grill Session is still open and will be closed.\n\n' : '')
       + `Start /implement on ${t.id}?`;
-    if ((!t.readyForAgent || t.session === 'running') && !confirm(msg)) return;
+    if (!confirm(msg)) return;
   }
   if (act === 'release') {
     const msg = t.session === 'running'
