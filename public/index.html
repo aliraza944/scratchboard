@@ -9,24 +9,43 @@
 <link rel="stylesheet" href="/vendor/xterm.css">
 <script src="/vendor/xterm.js"></script>
 <script src="/vendor/addon-fit.js"></script>
+<script>
+// Applied before the styles so a picked theme never flashes the other one.
+try { const t = localStorage.getItem('sb.theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch {}
+</script>
 <style>
+/* Light is Notion's palette: white page, warm-grey ink, soft tag colours, hairline rings. */
 :root {
-  --bg: #f6f5f2; --surface: #ffffff; --surface-2: #efede8; --line: #dedad2;
-  --text: #1d1c1a; --muted: #6b675f; --faint: #9a958b;
-  --accent: #2f5bd3; --ready: #1f7a4d; --ready-bg: #e3f2ea; --blocked: #8a6a1f; --blocked-bg: #f6eed9;
-  --progress: #2f5bd3; --progress-bg: #e6ecfb; --danger: #b3261e; --danger-bg: #fbe7e5;
-  --shadow: 0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.04);
-  --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Inter, sans-serif;
+  --bg: #ffffff; --surface: #ffffff; --surface-2: #ecebe8; --line: #cfcdc7;
+  --text: #22211d; --muted: #4f4e49; --faint: #8a8984; --hover: rgba(34,33,29,.08);
+  --accent: #1a5fb0; --ok: #2e8b57; --ready: #12301d; --ready-bg: #c4e2c9; --blocked: #3a2610; --blocked-bg: #f6d796;
+  --progress: #102c42; --progress-bg: #b9d6ea; --danger: #5a1210; --danger-bg: #fbc8bf;
+  --shadow: 0 1px 2px rgba(15,15,15,.12), 0 2px 6px rgba(15,15,15,.06);
+  --radius: 4px; --radius-card: 6px; --radius-chip: 3px;
+  --mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+  --sans: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  color-scheme: light;
 }
+/* Dark follows the OS unless the header toggle picks a theme (data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #141412; --surface: #1d1c1a; --surface-2: #262522; --line: #34322e;
-    --text: #ecebe7; --muted: #a29e95; --faint: #6f6b63;
-    --accent: #7c9cff; --ready: #5cc995; --ready-bg: #17321f; --blocked: #d9b45c; --blocked-bg: #33290f;
+    --text: #ecebe7; --muted: #a29e95; --faint: #6f6b63; --hover: rgba(255,255,255,.05);
+    --accent: #7c9cff; --ok: #5cc995; --ready: #5cc995; --ready-bg: #17321f; --blocked: #d9b45c; --blocked-bg: #33290f;
     --progress: #7c9cff; --progress-bg: #1b2440; --danger: #ff8a80; --danger-bg: #3a1714;
     --shadow: 0 1px 2px rgba(0,0,0,.4);
+    --radius: 6px; --radius-card: 8px; --radius-chip: 99px;
+    color-scheme: dark;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #141412; --surface: #1d1c1a; --surface-2: #262522; --line: #34322e;
+  --text: #ecebe7; --muted: #a29e95; --faint: #6f6b63; --hover: rgba(255,255,255,.05);
+  --accent: #7c9cff; --ok: #5cc995; --ready: #5cc995; --ready-bg: #17321f; --blocked: #d9b45c; --blocked-bg: #33290f;
+  --progress: #7c9cff; --progress-bg: #1b2440; --danger: #ff8a80; --danger-bg: #3a1714;
+  --shadow: 0 1px 2px rgba(0,0,0,.4);
+  --radius: 6px; --radius-card: 8px; --radius-chip: 99px;
+  color-scheme: dark;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--sans); }
@@ -36,7 +55,7 @@ header .repo { font-family: var(--mono); color: var(--muted); font-size: 13px; }
 header .spacer { flex: 1; }
 .live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
 .live i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
-.live.on i { background: var(--ready); box-shadow: 0 0 0 3px var(--ready-bg); }
+.live.on i { background: var(--ok); box-shadow: 0 0 0 3px var(--ready-bg); }
 label.toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); cursor: pointer; }
 main { padding: 16px 20px 60px; display: grid; gap: 24px; }
 .lane h2 { font-size: 14px; margin: 0 0 2px; font-weight: 650; }
@@ -46,11 +65,11 @@ main { padding: 16px 20px 60px; display: grid; gap: 24px; }
 .mapbar .note { font-size: 12px; color: var(--muted); }
 .lane .sub { color: var(--muted); font-size: 12px; margin-bottom: 10px; font-family: var(--mono); }
 .cols { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
-.col { background: var(--surface-2); border-radius: 10px; padding: 8px; min-height: 90px; border: 1px dashed transparent; transition: border-color .12s, background .12s; }
+.col { background: var(--surface-2); border-radius: var(--radius-card); padding: 8px; min-height: 90px; border: 1px dashed transparent; transition: border-color .12s, background .12s; }
 .col.drop-ok { border-color: var(--accent); background: var(--progress-bg); }
 .col h3 { margin: 2px 4px 8px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); font-weight: 650; display: flex; justify-content: space-between; }
-.col .hint { font-size: 12px; color: var(--faint); padding: 6px 4px; }
-.card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; margin-bottom: 8px; box-shadow: var(--shadow); cursor: pointer; }
+.col .hint { font-size: 12px; color: var(--muted); padding: 6px 4px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-card); padding: 9px 10px; margin-bottom: 8px; box-shadow: var(--shadow); cursor: pointer; }
 .card:hover { border-color: var(--faint); }
 .card[draggable="true"] { cursor: grab; }
 .card.dragging { opacity: .45; }
@@ -59,7 +78,7 @@ main { padding: 16px 20px 60px; display: grid; gap: 24px; }
 .card .id { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 .card .title { font-weight: 550; flex: 1; }
 .meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; align-items: center; }
-.chip { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: var(--surface-2); color: var(--muted); }
+.chip { font-size: 11px; padding: 1px 7px; border-radius: var(--radius-chip); background: var(--surface-2); color: var(--muted); }
 .chip.ready { background: var(--ready-bg); color: var(--ready); }
 .chip.wait { background: var(--blocked-bg); color: var(--blocked); }
 .chip.run { background: var(--progress-bg); color: var(--progress); }
@@ -68,19 +87,20 @@ main { padding: 16px 20px 60px; display: grid; gap: 24px; }
 .chip.ended, .chip.warn { background: var(--danger-bg); color: var(--danger); }
 @keyframes pulse { 50% { opacity: .35; } }
 .actions { display: flex; gap: 6px; margin-top: 8px; }
-button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; }
-button:hover { border-color: var(--faint); }
+button { font: inherit; font-size: 12px; padding: 3px 9px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--surface); color: var(--text); cursor: pointer; }
+button:hover { border-color: var(--faint); background: var(--hover); }
+button.primary:hover { background: var(--accent); filter: brightness(.95); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.quiet { font-size: 11px; padding: 2px 7px; color: var(--muted); }
 button:disabled { opacity: .5; cursor: default; }
-.harness { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.harness { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .harness button { border: 0; border-radius: 0; padding: 3px 8px; color: var(--muted); background: var(--surface); }
 .harness button + button { border-left: 1px solid var(--line); }
 .harness button.on { background: var(--surface-2); color: var(--text); font-weight: 600; }
-.mini { display: flex; gap: 8px; padding: 4px 6px; font-size: 12px; border-radius: 6px; cursor: pointer; color: var(--muted); }
-.mini:hover { background: var(--surface); color: var(--text); }
+.mini { display: flex; gap: 8px; padding: 4px 6px; font-size: 12px; border-radius: var(--radius); cursor: pointer; color: var(--muted); }
+.mini:hover { background: var(--hover); color: var(--text); }
 .mini .id { font-family: var(--mono); }
-.mini.selected { background: var(--surface); color: var(--text); }
+.mini.selected { background: var(--hover); color: var(--text); }
 aside { position: fixed; top: 0; right: 0; bottom: 0; width: min(560px, 100vw); background: var(--surface); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.08); transform: translateX(100%); transition: transform .18s ease; z-index: 10; display: flex; flex-direction: column; }
 aside.open { transform: none; }
 aside.wide { width: min(980px, 100vw); }
@@ -121,6 +141,7 @@ aside .editor .hint { flex: 1; font-size: 11px; color: var(--muted); }
   <span class="repo" id="repo"></span>
   <span class="spacer"></span>
   <label class="toggle"><input type="checkbox" id="hideDone"> Hide resolved Features</label>
+  <button class="quiet" id="theme" title="Switch between following the system, light and dark"></button>
   <span class="live" id="live"><i></i><span>connecting</span></span>
 </header>
 <main id="board"><div class="empty">Loading…</div></main>
@@ -153,6 +174,16 @@ const store = { get(k) { try { return localStorage.getItem(k); } catch { return 
 
 $('hideDone').checked = store.get('sb.hideDone') === '1';
 $('hideDone').onchange = (e) => { store.set('sb.hideDone', e.target.checked ? '1' : '0'); render(); };
+
+// Theme: Auto follows the OS; Light (Notion-style) and Dark override it.
+const THEMES = ['auto', 'light', 'dark'];
+function setTheme(t) {
+  if (t === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  store.set('sb.theme', t);
+  $('theme').textContent = { auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' }[t];
+}
+setTheme(document.documentElement.dataset.theme ?? 'auto');
+$('theme').onclick = () => setTheme(THEMES[(THEMES.indexOf(document.documentElement.dataset.theme ?? 'auto') + 1) % THEMES.length]);
 
 function connect() {
   const es = new EventSource('/api/events');
