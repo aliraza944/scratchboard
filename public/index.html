@@ -138,10 +138,11 @@ const COLS = [['blocked', 'Blocked'], ['ready', 'Ready'], ['grilling', 'Grilling
 const CLAIMED = ['grilling', 'in-progress'];
 // Which drags are allowed, and what each one does.
 const MOVES = { 'ready>grilling': 'grill', 'ready>in-progress': 'launch', 'grilling>in-progress': 'launch', 'grilling>ready': 'release', 'in-progress>ready': 'release' };
-// The Harness picked for a Ticket's or Map's next Launch, by key. Never saved: it's
-// Claude unless you flip it, and goes back to Claude once that Launch has started.
+// The Harness picked for a Ticket's or Map's next Launch, by key. Never saved: until you
+// flip it, it's the Harness of the Ticket's claim or the Map's Session, else Claude.
 const harnessPick = new Map();
-const harnessFor = (key) => harnessPick.get(key) ?? 'claude';
+const harnessFor = (key) => harnessPick.get(key)
+  ?? byKey(key)?.harness ?? board?.features.find((f) => f.mapKey === key)?.mapSession?.harness ?? 'claude';
 const skillCall = (harness, skill) => (harness === 'codex' ? `Codex $${skill}` : `/${skill}`);
 let board = null;
 let selected = null;
@@ -179,7 +180,7 @@ function harnessToggle(key) {
 document.addEventListener('click', (e) => {
   const b = e.target.closest('button[data-harness]');
   if (!b) return;
-  if (b.dataset.harness === 'claude') harnessPick.delete(b.dataset.for); else harnessPick.set(b.dataset.for, b.dataset.harness);
+  harnessPick.set(b.dataset.for, b.dataset.harness);
   render();
   if (selected) refreshPanel(false);
 });
